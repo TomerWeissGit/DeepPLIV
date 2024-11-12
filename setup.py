@@ -11,6 +11,7 @@ setup(
         'torch',  # or tensorflow, depending on your implementation
         'numpy',
         'scikit-learn',
+
         # add other dependencies
     ],
     python_requires='>=3.10',
