@@ -1,6 +1,6 @@
 import numpy as np
-
-
+from typing_extensions import Literal
+from utils.helpers import spinner_decorator
 class SimDataCreator:
 
     def __init__(self, p: int = 20,
@@ -9,7 +9,8 @@ class SimDataCreator:
                  beta_u: float = 5,
                  gamma_u: float = 3,
                  std_epsilon: float = 5,
-                 std_eta: float = 3):
+                 std_eta: float = 3,
+                 scenario: Literal[1, 2, 3, 4, 5] = 1):
         """
         Create a simulated data set for the partially linear IV model.
         The data is generated according to the following model:
@@ -35,25 +36,30 @@ class SimDataCreator:
         :param gamma_u: float, the coefficient for the confounding variable in the endogenous variable equation.
         :param std_epsilon: float, the standard deviation of the error term.
         :param std_eta: float, the standard deviation of the error term for the endogenous variable.
+        :param scenario: int, the scenario for the function g.
         """
+        if scenario not in [1, 2, 3, 4, 5]:
+            raise ValueError("Scenario must be 1, 2, 3, 4 or 5")
+        self.scenario = scenario
         self.p = p
         self.n = n
         self.beta_1 = beta_1
         self.beta_u = beta_u
         self.gamma_u = gamma_u
-        self.y: np.array = None
-        self.v: np.array = None
         self.u: np.array = np.random.normal(0, 1, self.n)
         z, z_coefficients = self._get_z_matrix()
         self.z: np.array = z
         self.z_coefficients: np.array = z_coefficients
         self.epsilon: np.array = np.random.normal(0, std_epsilon, n)
         self.eta: np.array = np.random.normal(0, std_eta, n)
+        self.v: np.array = self.get_v_vector()
+        self.y: np.array = self.get_y()
 
-
+    @spinner_decorator("Generating y vector")
     def get_y(self) -> np.array:
-        return self.y
+        return self.beta_1 * self.v + self.beta_u * self.u + self.epsilon
 
+    @spinner_decorator("Generating z matrix")
     def _get_z_matrix(self) -> (np.array, np.array):
         """
         Create a matrix of z vectors for the instrumental variable.
@@ -102,7 +108,8 @@ class SimDataCreator:
 
         return np.array(z_coefficients_matrix), np.array(z_all_matrix)
 
-    def get_v_vector(self, scenario: int = 1) -> np.array:
+    @spinner_decorator("Generating v vector")
+    def get_v_vector(self) -> np.array:
         """
         Create a vector of v values for the endogenous variable.
         The v values are generated according to the following model:
@@ -120,33 +127,28 @@ class SimDataCreator:
         4. g(z) = sum(z_i) + z_1^2 + z_2^2 + z_3 * z_4
         5. g(z) = sum(z_i) + binomial(z_1, z_2) + z_3 * z_4
         where z_1, z_2, z_3, z_4 are the first, second, third and fourth elements of z.
-        :param scenario: int, the scenario for the function g.
         :return: np.array, the vector of v values.
         """
-        if scenario not in [1, 2, 3, 4, 5]:
-            raise ValueError("Scenario must be 1, 2, 3, 4 or 5")
         sum_coefficients = self.z_coefficients.sum(axis=1)
         z_b_1 = self.z_coefficients[:, 0]
         z_b_2 = self.z_coefficients[:, 1]
         z_b_3 = self.z_coefficients[:, 2]
         z_b_4 = self.z_coefficients[:, 3]
         gamma_u_eta = self.gamma_u * self.u + self.eta
-        if scenario == 1:
+        if self.scenario == 1:
             return sum_coefficients + gamma_u_eta
-        if scenario == 2:
+        if self.scenario == 2:
             return sum_coefficients + z_b_1 ** 2 + z_b_2 ** 2 + gamma_u_eta
-        if scenario == 3:
+        if self.scenario == 3:
             return sum_coefficients + z_b_3 * z_b_4 + gamma_u_eta
-        if scenario == 4:
+        if self.scenario == 4:
             return sum_coefficients + z_b_1 ** 2 + z_b_2 ** 2 + z_b_3 * z_b_4 + gamma_u_eta
-        if scenario == 5:
+        if self.scenario == 5:
             binomial_part = int((z_b_1 < (-0.5)) | (z_b_2 < (-0.5))) - int((z_b_1 > (-0.5)) | (z_b_2 > (-0.5)))
             return sum_coefficients + binomial_part + z_b_3 * z_b_4 + gamma_u_eta
 
 
 if __name__ == '__main__':
     sim_data = SimDataCreator()
-    y = sim_data.get_y()
-    v = sim_data.get_v_vector(1)
-    print(y)
-    print(v)
+    print(sim_data.y)
+    print(sim_data.v)
