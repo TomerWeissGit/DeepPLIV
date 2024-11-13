@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from utils.helpers import EarlyStopping
 
 
 class NeuralNetworkSecondStage(nn.Module):
@@ -41,14 +42,14 @@ class NeuralNetworkSecondStage(nn.Module):
         output = self.final_layer(x)
         return output
 
-
-
     def train_new_data(self,
                        x_exog: np.array,
                        v_linear: np.array,
                        y: np.array,
                        epochs: int,
-                       learning_rate: float) -> None:
+                       learning_rate: float,
+                       early_stopping_min_delta: float = 0.0,
+                       early_stopping_patience: int = 30) -> None:
         """
         Train the neural network model.
         :param x_exog: np.array, the input exogenous data.
@@ -56,6 +57,8 @@ class NeuralNetworkSecondStage(nn.Module):
         :param y: np.array, the outcome data.
         :param epochs: int, the number of desired epochs.
         :param learning_rate: float, the learning rate for the optimizer.
+        :param early_stopping_min_delta: float, minimum change in the monitored quantity to qualify as an improvement.
+        :param early_stopping_patience: int, how many epochs to wait before stopping when loss is not improving.
         """
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x_exog, dtype=torch.float32)
@@ -66,7 +69,11 @@ class NeuralNetworkSecondStage(nn.Module):
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
+        # Initialize early stopping
+        early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
+
         # Training loop
+        counter = 0
         for epoch in range(epochs):
             self.train()  # Set the model to training mode
 
@@ -80,7 +87,14 @@ class NeuralNetworkSecondStage(nn.Module):
             optimizer.step()
 
             # Print the loss for every epoch
-            print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
+            if counter % 100 == 0:
+                print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
+            counter += 1
+            # Check early stopping
+            early_stopping(loss.item())
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
 
     def predict(self, x_new_exog: np.array, v_new_endog: np.array) -> np.array:
         """

@@ -105,7 +105,7 @@ class DeepPLIV:
         :return: float, the coefficient of v_predicted.
         """
         # Assuming the first layer of the second stage model is a linear layer
-        return self.second_stage_model.final_layer.weight[0, 0].item()
+        return self.second_stage_model.final_layer.weight[0, -1].item()
     pass
 
 
@@ -115,7 +115,7 @@ if __name__ == '__main__':
     deep_pliv = DeepPLIV()
     p = 50
     n = 20000
-    beta_1 = 3
+    beta_1 = 1
     beta_u = 5
     gamma_u = 0
     std_epsilon = 4
