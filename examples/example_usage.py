@@ -1,8 +1,10 @@
 import numpy as np
 from typing_extensions import Literal
-from utils.helpers import spinner_decorator
-class SimDataCreator:
 
+from utils.helpers import spinner_decorator
+
+
+class SimDataCreator:
     def __init__(self, p: int = 20,
                  n: int = 10000,
                  beta_1: float = 1,
@@ -105,7 +107,6 @@ class SimDataCreator:
             z_coefficients_vector, z_all_vector = _aux_get_z_vector()
             z_coefficients_matrix.append(z_coefficients_vector)
             z_all_matrix.append(z_all_vector)
-
         return np.array(z_coefficients_matrix), np.array(z_all_matrix)
 
     @spinner_decorator("Generating v vector")
