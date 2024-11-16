@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from utils.helpers import EarlyStopping
+from utils.helpers import EarlyStopping, spinner_decorator
 
 
 class NeuralNetworkSecondStage(nn.Module):
@@ -25,11 +25,13 @@ class NeuralNetworkSecondStage(nn.Module):
             nn.Linear(128, 32),
             nn.ReLU(),
             nn.Linear(32, 8),
+            nn.ReLU(),
+            nn.Linear(8, 1)
 
         )
 
         # Final layer to combine both v and x
-        self.final_layer = nn.Linear(8 + v, 1)  # 8 from deep branch and 1 from linear resulting in size 9
+        self.final_layer = nn.Linear(1 + v, 1)  # 8 from deep branch and 1 from linear resulting in size 9
 
     def forward(self, x, v):
         # Pass the first input through the deep neural network
@@ -42,6 +44,7 @@ class NeuralNetworkSecondStage(nn.Module):
         output = self.final_layer(x)
         return output
 
+    @spinner_decorator("Training second stage")
     def train_new_data(self,
                        x_exog: np.array,
                        v_linear: np.array,
@@ -49,7 +52,8 @@ class NeuralNetworkSecondStage(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        early_stopping_min_delta: float = 0.0,
-                       early_stopping_patience: int = 30) -> None:
+                       early_stopping_patience: int = 100,
+                       print_every_x: int = 10000) -> None:
         """
         Train the neural network model.
         :param x_exog: np.array, the input exogenous data.
@@ -59,6 +63,7 @@ class NeuralNetworkSecondStage(nn.Module):
         :param learning_rate: float, the learning rate for the optimizer.
         :param early_stopping_min_delta: float, minimum change in the monitored quantity to qualify as an improvement.
         :param early_stopping_patience: int, how many epochs to wait before stopping when loss is not improving.
+        :param print_every_x: int, print the loss every x epochs.
         """
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x_exog, dtype=torch.float32)
@@ -87,7 +92,7 @@ class NeuralNetworkSecondStage(nn.Module):
             optimizer.step()
 
             # Print the loss for every epoch
-            if counter % 100 == 0:
+            if counter % print_every_x == 0:
                 print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
             counter += 1
             # Check early stopping
@@ -96,7 +101,9 @@ class NeuralNetworkSecondStage(nn.Module):
                 print("Early stopping")
                 break
 
-    def predict(self, x_new_exog: np.array, v_new_endog: np.array) -> np.array:
+    def predict(self,
+                x_new_exog: np.array,
+                v_new_endog: np.array) -> np.array:
         """
         Predict the outcome for new input data.
         :param x_new_exog: np.array, the new input data.

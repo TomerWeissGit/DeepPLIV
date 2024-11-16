@@ -1,6 +1,8 @@
 import numpy as np
 from models.first_stage import NeuralNetworkFirstStage
 from models.second_stage import NeuralNetworkSecondStage
+from sklearn.linear_model import LinearRegression
+
 import torch
 
 
@@ -113,34 +115,50 @@ if __name__ == '__main__':
     from examples.example_usage import SimDataCreator
 
     deep_pliv = DeepPLIV()
-    p = 50
-    n = 20000
-    beta_1 = 1
-    beta_u = 5
-    gamma_u = 0
-    std_epsilon = 4
-    std_eta = 4
-    scenario = 3
+    p = 100
+    n = 500
+    beta_1 = 0.5
+    beta_u = 10
+    gamma_u = 2
+    std_epsilon = 3
+    std_eta = 3
+    scenario = 5
     data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
     v = data.v
     z = data.z
-    first_stage_epochs = 10000
-    first_stage_learning_rate = 0.01
+    first_stage_epochs = 5000
+    first_stage_learning_rate = 0.05
     first_stage_model = deep_pliv._fit_first_stage(v, z, first_stage_epochs, first_stage_learning_rate)
+    first_stage_2sls_model = LinearRegression()
+    first_stage_2sls_model.fit(z, v)
     data_2 = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
     z_second = data_2.z
+    z_predicted_linear_regression = first_stage_2sls_model.predict(z_second)
     v_predicted = deep_pliv._predict_first_stage(z_second)
-    predicted_error = np.sqrt(((v_predicted - data_2.v) ** 2).mean())
+
+    v_pred_error_linear_regression = z_predicted_linear_regression - data_2.v
+    v_pred_error = v_predicted-data_2.v
+    predicted_error = np.sqrt((v_pred_error ** 2).mean())
     print(f"Predicted error: {predicted_error}")
-    x = np.ones((n, 1))
+    x = np.concatenate((v_pred_error, np.ones((n, 1))), axis=1)
     y = data_2.y
-    second_stage_epochs = 10000
+    v = data_2.v.reshape(-1, 1)
+    second_stage_epochs = 5000
     second_stage_learning_rate = 0.01
     # v_predicted = np.concatenate((v_predicted, np.ones((n, 1))), axis=1)
-    second_stage_model = deep_pliv._fit_second_stage(v_predicted, x, y, second_stage_epochs, second_stage_learning_rate)
-    y_predicted = deep_pliv._predict_second_stage(v_predicted, x)
+
+    second_stage_linear_model = LinearRegression()
+    x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))),
+                                         axis=1)
+    x_all = np.concatenate((x_linear_regression, v), axis=1)
+    second_stage_linear_model.fit(x_all, y)
+
+    second_stage_model = deep_pliv._fit_second_stage(v, x, y, second_stage_epochs, second_stage_learning_rate)
+    y_predicted = deep_pliv._predict_second_stage(v, x)
     predicted_error = np.sqrt(((y_predicted - y) ** 2).mean())
-    print(deep_pliv.get_v_predicted_coefficient())
-    print(f"Predicted error: {predicted_error}")
+    print('deep_coefs:', deep_pliv.get_v_predicted_coefficient())
+    print('linear_coefs:', second_stage_linear_model.coef_[-1])
+    print(f"Predicted error deep: {predicted_error}")
+    print(f"Predicted error linear: {np.sqrt(((second_stage_linear_model.predict(x_all) - y) ** 2).mean())}")
 
 

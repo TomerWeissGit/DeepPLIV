@@ -2,6 +2,8 @@ import numpy as np
 from typing_extensions import Literal
 
 from utils.helpers import spinner_decorator
+from core.trainer import DeepPLIV
+from sklearn.linear_model import LinearRegression
 
 
 class SimDataCreator:
@@ -145,11 +147,81 @@ class SimDataCreator:
         if self.scenario == 4:
             return sum_coefficients + z_b_1 ** 2 + z_b_2 ** 2 + z_b_3 * z_b_4 + gamma_u_eta
         if self.scenario == 5:
-            binomial_part = int((z_b_1 < (-0.5)) | (z_b_2 < (-0.5))) - int((z_b_1 > (-0.5)) | (z_b_2 > (-0.5)))
+            binomial_part = (((z_b_1 < (-0.5)) | (z_b_2 < (-0.5))).astype(int)
+                             - ((z_b_1 > (-0.5)) | (z_b_2 > (-0.5))).astype(int))
             return sum_coefficients + binomial_part + z_b_3 * z_b_4 + gamma_u_eta
 
 
+def run_simulation(scenario, p=50, n=500, beta_1=0.5, beta_u=10, gamma_u=2, std_epsilon=3, std_eta=3,
+                   first_stage_epochs=3000, first_stage_learning_rate=0.05, second_stage_epochs=3000,
+                   second_stage_learning_rate=0.01):
+    deep_pliv = DeepPLIV()
+    data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
+    v, z = data.v, data.z
+
+    deep_pliv._fit_first_stage(v, z, first_stage_epochs, first_stage_learning_rate)
+    first_stage_2sls_model = LinearRegression()
+    first_stage_2sls_model.fit(z, v)
+
+    data_2 = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
+    z_second = data_2.z
+
+    z_predicted_linear_regression = first_stage_2sls_model.predict(z_second)
+    v_predicted = deep_pliv._predict_first_stage(z_second)
+
+    v_pred_error_linear_regression = z_predicted_linear_regression - data_2.v
+    v_pred_error = v_predicted - data_2.v
+
+    x = np.concatenate((v_pred_error, np.ones((n, 1))), axis=1)
+    y = data_2.y
+    v = data_2.v.reshape(-1, 1)
+
+    second_stage_linear_model = LinearRegression()
+    x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))), axis=1)
+    x_all = np.concatenate((x_linear_regression, v), axis=1)
+    second_stage_linear_model.fit(x_all, y)
+
+    deep_pliv._fit_second_stage(v, x, y, second_stage_epochs, second_stage_learning_rate)
+    y_predicted = deep_pliv._predict_second_stage(v, x)
+    predicted_error_deep = np.sqrt(((y_predicted - y) ** 2).mean())
+
+    return {
+        'scenario': scenario,
+        'predicted_error_linear': np.sqrt(((second_stage_linear_model.predict(x_all) - y) ** 2).mean()),
+        'predicted_error_deep': predicted_error_deep,
+        'linear_coefficients': second_stage_linear_model.coef_[-1],
+        'deep_coefficients': deep_pliv.get_v_predicted_coefficient()
+    }
+
+
+def monte_carlo_simulation(num_simulations=100) -> list:
+    results = []
+    for scenario in range(1, 6):
+        scenario_results = []
+        for i in range(num_simulations):
+            result = run_simulation(scenario)
+            scenario_results.append(result)
+            print(f"Iteration {i + 1}/{num_simulations} for scenario {scenario}")
+        results.append({
+            'scenario': scenario,
+            'average_predicted_error_linear': np.mean([r['predicted_error_linear'] for r in scenario_results]),
+            'average_predicted_error_deep': np.mean([r['predicted_error_deep'] for r in scenario_results]),
+            'average_linear_coefficients': np.mean([r['linear_coefficients'] for r in scenario_results], axis=0),
+            'average_deep_coefficients': np.mean([r['deep_coefficients'] for r in scenario_results]),
+            'std_linear_coefficients': np.std([r['linear_coefficients'] for r in scenario_results], axis=0),
+            'std_deep_coefficients': np.std([r['deep_coefficients'] for r in scenario_results])
+        })
+    return results
+
+
 if __name__ == '__main__':
-    sim_data = SimDataCreator()
-    print(sim_data.y)
-    print(sim_data.v)
+    num_simulations = 300
+    results = monte_carlo_simulation(num_simulations)
+    for result in results:
+        print(f"Scenario {result['scenario']}:")
+        print(f"  Average Predicted Error (Linear): {result['average_predicted_error_linear']}")
+        print(f"  Average Predicted Error (Deep): {result['average_predicted_error_deep']}")
+        print(f"  Average Linear Coefficients: {result['average_linear_coefficients']}")
+        print(f"  Average Deep Coefficients: {result['average_deep_coefficients']}")
+        print(f"  Std Linear Coefficients: {result['std_linear_coefficients']}")
+        print(f"  Std Deep Coefficients: {result['std_deep_coefficients']}")

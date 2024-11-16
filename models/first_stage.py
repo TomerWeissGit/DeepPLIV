@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as functional
 import torch.optim as optim
-from utils.helpers import EarlyStopping
+from utils.helpers import EarlyStopping, spinner_decorator
 
 
 class NeuralNetworkFirstStage(nn.Module):
@@ -26,8 +26,12 @@ class NeuralNetworkFirstStage(nn.Module):
         x = self.fc4(x)  # Linear activation for the final layer
         return x
 
-    def train_new_data(self, x: np.array, y: np.array, epochs: int, learning_rate: float,
-                       early_stopping_patience: int = 30, early_stopping_min_delta: float = 0.0) -> None:
+    @spinner_decorator("Training first stage")
+    def train_new_data(self, x: np.array, y: np.array, epochs: int,
+                       learning_rate: float,
+                       early_stopping_patience: int = 100,
+                       early_stopping_min_delta: float = 0.0,
+                       print_every_x: int = 10000) -> None:
         """
         Train the neural network model.
         :param x: np.array, the input data.
@@ -36,6 +40,7 @@ class NeuralNetworkFirstStage(nn.Module):
         :param learning_rate: float, the learning rate for the optimizer.
         :param early_stopping_patience: int, how many epochs to wait before stopping when loss is not improving.
         :param early_stopping_min_delta: float, minimum change in the monitored quantity to qualify as an improvement.
+        :param print_every_x: int, print the loss for every x epochs.
         """
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
@@ -63,7 +68,7 @@ class NeuralNetworkFirstStage(nn.Module):
             optimizer.step()
 
             # Print the loss for every epoch
-            if counter % 100 == 0:
+            if counter % print_every_x == 0:
                 print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
             counter += 1
             # check early stopping
