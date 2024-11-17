@@ -1,16 +1,14 @@
-import numpy as np
-from typing_extensions import Literal
-
-from utils.helpers import spinner_decorator
-from core.trainer import DeepPLIV
-from sklearn.linear_model import LinearRegression
 import multiprocessing as mp
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
+from typing_extensions import Literal
+
 from core.trainer import DeepPLIV
+from utils.helpers import spinner_decorator
 
 
 class SimDataCreator:
