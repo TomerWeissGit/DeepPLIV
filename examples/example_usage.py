@@ -4,6 +4,13 @@ from typing_extensions import Literal
 from utils.helpers import spinner_decorator
 from core.trainer import DeepPLIV
 from sklearn.linear_model import LinearRegression
+import multiprocessing as mp
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from core.trainer import DeepPLIV
 
 
 class SimDataCreator:
@@ -152,8 +159,8 @@ class SimDataCreator:
             return sum_coefficients + binomial_part + z_b_3 * z_b_4 + gamma_u_eta
 
 
-def run_simulation(scenario, p=50, n=500, beta_1=0.5, beta_u=10, gamma_u=2, std_epsilon=3, std_eta=3,
-                   first_stage_epochs=3000, first_stage_learning_rate=0.05, second_stage_epochs=3000,
+def run_simulation(scenario, p=20, n=2000, beta_1=0.5, beta_u=1, gamma_u=1, std_epsilon=1, std_eta=1,
+                   first_stage_epochs=3000, first_stage_learning_rate=0.01, second_stage_epochs=3000,
                    second_stage_learning_rate=0.01):
     deep_pliv = DeepPLIV()
     data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
@@ -177,7 +184,8 @@ def run_simulation(scenario, p=50, n=500, beta_1=0.5, beta_u=10, gamma_u=2, std_
     v = data_2.v.reshape(-1, 1)
 
     second_stage_linear_model = LinearRegression()
-    x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))), axis=1)
+    x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))),
+                                         axis=1)
     x_all = np.concatenate((x_linear_regression, v), axis=1)
     second_stage_linear_model.fit(x_all, y)
 
@@ -194,34 +202,266 @@ def run_simulation(scenario, p=50, n=500, beta_1=0.5, beta_u=10, gamma_u=2, std_
     }
 
 
-def monte_carlo_simulation(num_simulations=100) -> list:
-    results = []
-    for scenario in range(1, 6):
-        scenario_results = []
-        for i in range(num_simulations):
-            result = run_simulation(scenario)
-            scenario_results.append(result)
-            print(f"Iteration {i + 1}/{num_simulations} for scenario {scenario}")
-        results.append({
-            'scenario': scenario,
-            'average_predicted_error_linear': np.mean([r['predicted_error_linear'] for r in scenario_results]),
-            'average_predicted_error_deep': np.mean([r['predicted_error_deep'] for r in scenario_results]),
-            'average_linear_coefficients': np.mean([r['linear_coefficients'] for r in scenario_results], axis=0),
-            'average_deep_coefficients': np.mean([r['deep_coefficients'] for r in scenario_results]),
-            'std_linear_coefficients': np.std([r['linear_coefficients'] for r in scenario_results], axis=0),
-            'std_deep_coefficients': np.std([r['deep_coefficients'] for r in scenario_results])
-        })
+def run_scenario_simulations(scenario, num_simulations):
+    scenario_results = []
+    for i in range(num_simulations):
+        result = run_simulation(scenario)
+        scenario_results.append(result)
+        save_to_pickle(scenario_results, f'scenario_{scenario}_{num_simulations}_results.pkl')
+        print(f"Iteration {i + 1}/{num_simulations} for scenario {scenario}")
+    return {
+        'scenario': scenario,
+        'average_predicted_error_linear': np.mean([r['predicted_error_linear'] for r in scenario_results]),
+        'average_predicted_error_deep': np.mean([r['predicted_error_deep'] for r in scenario_results]),
+        'average_linear_coefficients': np.mean([r['linear_coefficients'] for r in scenario_results], axis=0),
+        'average_deep_coefficients': np.mean([r['deep_coefficients'] for r in scenario_results]),
+        'std_linear_coefficients': np.std([r['linear_coefficients'] for r in scenario_results], axis=0),
+        'std_deep_coefficients': np.std([r['deep_coefficients'] for r in scenario_results])
+    }
+
+
+def monte_carlo_simulation(num_simulations=100):
+    with mp.Pool(processes=5) as pool:
+        results = pool.starmap(run_scenario_simulations, [(scenario, num_simulations) for scenario in range(1, 6)])
     return results
 
 
+def save_to_pickle(lst: list, name: str = 'results.pkl'):
+    import pickle
+    with open(name, 'wb') as f:
+        pickle.dump(lst, f)
+
+
+# if __name__ == '__main__':
+#     num_simulations = 1
+#     results = monte_carlo_simulation(num_simulations)
+#     save_to_pickle(results, '1_results_n_2000_20_beta1_05.pkl')
+#     for result in results:
+#         print(f"Scenario {result['scenario']}:")
+#         print(f"  Average Predicted Error (Linear): {result['average_predicted_error_linear']}")
+#         print(f"  Average Predicted Error (Deep): {result['average_predicted_error_deep']}")
+#         print(f"  Average Linear Coefficients: {result['average_linear_coefficients']}")
+#         print(f"  Average Deep Coefficients: {result['average_deep_coefficients']}")
+#         print(f"  Std Linear Coefficients: {result['std_linear_coefficients']}")
+#         print(f"  Std Deep Coefficients: {result['std_deep_coefficients']}")
+
+# with open('results.pkl', 'rb') as f:
+#     results = pickle.load(f)
+
+# Y = \beta_0 + \beta_1 * X + \beta_2 * G + \beta_3 * XG + \beta_z * Z + \beta_u * U + \epsilon_Y
+# X = \gamma_0 + \gamma_iv * G_iv + \gamma_z * Z + \gamma_u * U + \epsilon_X
+class NaiveSRISPS:
+
+    def __init__(self, beta_u: float = 0, beta_3: float = 0, gamma_u: float = 1, dependent: int = 0):
+        """
+        Create a NaiveSRISPS object. The object is used to store the coefficients of the Naive SR-IV model. The model is
+        defined as follows:
+        Y = \beta_0 + \beta_1 * X + \beta_2 * G + \beta_3 * XG + \beta_z * Z + \beta_u * U + \epsilon_Y
+        X = \gamma_0 + \gamma_iv * G_iv + \gamma_z * Z + \gamma_u * U + \epsilon_X
+        where:
+        - Y is the dependent variable
+        - X is the endogenous variable
+        - G is the exogenous variable which imitates genes with an interaction effect on Y with X.
+        - G_iv is the instrument variable for the endogenous variable.
+        - Z is the exogenous variable with no interaction effect on Y with X.
+        - U is the confounding variable.
+        - \epsilon_Y and \epsilon_X are the error terms for Y and X.
+        :param beta_u: float, the coefficient for the confounding variable in the Y equation.
+        :param beta_3: float, the coefficient for the interaction term between Z variable and X variable in the Y equation.
+        :param gamma_u: float, the coefficient for the confounding variable in the X equation.
+        :param dependent: int, if there is dependency between g and g_iv or not.
+        """
+        # setting the random variables for the model.
+        self.u = np.random.normal(0, 1, 10000)
+        self.z = np.random.normal(0, 1, 10000)
+        self.epsilon_x = np.random.normal(0, 1, 10000)
+        self.epsilon_y = np.random.normal(0, 1, 10000)
+        self.g_iv = np.random.normal(0, 1, 10000)
+        # setting the coefficients for the model.
+        self.beta_0 = 0
+        self.beta_1 = 1
+        self.beta_2 = 0.5
+        self.beta_3 = beta_3
+        self.beta_z = 0.5
+        self.beta_u = beta_u
+        self.gamma_0 = 0
+        self.gamma_iv = 0.5
+        self.gamma_z = 0.5
+        self.gamma_u = gamma_u
+        # calculating g variable
+        self.g = np.array([np.random.binomial(2, 0.3 + (0.3 * (iv > 0) * dependent), 1)[0] for iv in self.g_iv])
+        # calculating the X variable
+        self.x = (self.gamma_0
+                  + self.gamma_iv * self.g_iv
+                  + self.gamma_z * self.z
+                  + self.gamma_u * self.u
+                  + self.epsilon_x)
+        # calculating the Y variable
+        self.y = (self.beta_0
+                  + self.beta_1 * self.x
+                  + self.beta_2 * self.g
+                  + self.beta_3 * self.x * self.g
+                  + self.beta_z * self.z
+                  + beta_u * self.u
+                  + self.epsilon_y)
+
+    def estimate_naive_regression(self):
+        """
+        Estimate the Naive SR-IV model using a simple linear regression model.
+        :return: np.array, the coefficients of the Naive SR-IV model.
+        """
+        x = np.concatenate((self.x.reshape(-1, 1),
+                            self.g.reshape(-1, 1),
+                            self.x.reshape(-1, 1) * self.g.reshape(-1, 1),
+                            self.z.reshape(-1, 1)),
+                           axis=1)
+        y = self.y
+        model = LinearRegression()
+        model.fit(x, y)
+        return model.coef_
+
+    def estimate_naive_regression(self):
+        """
+        Estimate the Naive SR-IV model using a simple linear regression model.
+        :return: np.array, the coefficients of the Naive SR-IV model.
+        """
+
+        x = np.concatenate((self.x.reshape(-1, 1),
+                            self.g.reshape(-1, 1),
+                            self.x.reshape(-1, 1) * self.g.reshape(-1, 1),
+                            self.z.reshape(-1, 1)),
+                           axis=1)
+        y = self.y
+        model = LinearRegression()
+        model.fit(x, y)
+        return model.coef_
+
+    def get_first_and_second_stage_x_data(self):
+        """
+        Get the data for the first stage of the 2SLS model.
+        :return: np.array, the data for the first stage of the 2SLS model.
+        """
+        x_first_stage = self.x[:5000]
+        g_iv_first_stage = self.g_iv[:5000]
+        z_first_stage = self.z[:5000]
+        vars_first_stage = np.concatenate((g_iv_first_stage.reshape(-1, 1), z_first_stage.reshape(-1, 1)), axis=1)
+
+        x_second_stage = self.x[5000:]
+        g_iv_second_stage = self.g_iv[5000:]
+        z_second_stage = self.z[5000:]
+        vars_second_stage = np.concatenate((g_iv_second_stage.reshape(-1, 1), z_second_stage.reshape(-1, 1)), axis=1)
+        return vars_first_stage, x_first_stage, vars_second_stage, x_second_stage
+
+    def estimate_sps(self):
+        """
+        Estimate the 2SLS model using a simple linear regression model. - SPS
+        :return: np.array, the coefficients of the Naive SR-IV model.
+        """
+
+        vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
+        model = LinearRegression()
+        model.fit(vars_first_stage, x_first_stage)
+        x_predicted = model.predict(vars_second_stage)
+        x = np.concatenate((x_predicted.reshape(-1, 1),
+                            self.g[5000:].reshape(-1, 1),
+                            x_predicted.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
+                            self.z[5000:].reshape(-1, 1)),
+                           axis=1)
+        y = self.y[5000:]
+        model = LinearRegression()
+        model.fit(x, y)
+        return model.coef_
+
+    def estimate_sri(self):
+        """
+        Estimate the 2SLS model using a simple linear regression model - SRI
+        :return: np.array, the coefficients of the Naive SR-IV model.
+        """
+
+        vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
+        model = LinearRegression()
+        model.fit(vars_first_stage, x_first_stage)
+        x_predicted = model.predict(vars_second_stage)
+        x_error = x_second_stage.reshape(-1,1) - x_predicted
+
+        x = np.concatenate((x_second_stage.reshape(-1, 1),
+                            self.g[5000:].reshape(-1, 1),
+                            x_second_stage.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
+                            self.z[5000:].reshape(-1, 1),
+                            x_error),
+                           axis=1)
+        y = self.y[5000:]
+        model = LinearRegression()
+        model.fit(x, y)
+        return model.coef_
+    def estimating_sri_with_nn(self):
+        """
+        Estimate the 2SLS model using a simple neural network model. - SPS, this class is going to use the DeepPLIV
+        model, which is a deep learning model for the 2SLS model.
+        :return: np.array, the coefficients of the Naive SR-IV model.
+        """
+
+        vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
+        model = DeepPLIV()
+        first_stage_model = model._fit_first_stage(x_first_stage, vars_first_stage, 2000, 0.001)
+        x_predicted = first_stage_model.predict(vars_second_stage)
+        x_error = x_second_stage.reshape(-1,1) - x_predicted
+
+        x = np.concatenate((x_second_stage.reshape(-1, 1),
+                            self.g[5000:].reshape(-1, 1),
+                            x_second_stage.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
+                            self.z[5000:].reshape(-1, 1),
+                            x_error),
+                           axis=1)
+        y = self.y[5000:]
+        model = LinearRegression()
+        model.fit(x, y)
+        return model.coef_
+
+
+def run_simulation(num_simulations=300):
+    naive_srisps = NaiveSRISPS(beta_u=3, beta_3=0.5, gamma_u=1, dependent=0)
+    results = {
+        'method': [],
+        'coefficient': [],
+        'value': []
+    }
+
+    for _ in range(num_simulations):
+        coefficients = naive_srisps.estimate_naive_regression()
+        for i, coef in enumerate(coefficients):
+            results['method'].append('Naive Regression')
+            results['coefficient'].append(f'coef_{i}')
+            results['value'].append(coef)
+
+        coefficients = naive_srisps.estimate_sps()
+        for i, coef in enumerate(coefficients):
+            results['method'].append('SPS')
+            results['coefficient'].append(f'coef_{i}')
+            results['value'].append(coef)
+
+        coefficients = naive_srisps.estimate_sri()
+        for i, coef in enumerate(coefficients):
+            results['method'].append('SRI')
+            results['coefficient'].append(f'coef_{i}')
+            results['value'].append(coef)
+
+        coefficients = naive_srisps.estimating_sps_with_nn()
+        for i, coef in enumerate(coefficients):
+            results['method'].append('SPS with NN')
+            results['coefficient'].append(f'coef_{i}')
+            results['value'].append(coef)
+  #  save_to_pickle(results, 'sim_results_with_nn_model.pkl')
+    return pd.DataFrame(results)
+
+
+def plot_boxplot(df):
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(x='coefficient', y='value', hue='method', data=df)
+    plt.title('Coefficient Distribution by Method')
+    plt.show()
+
+
 if __name__ == '__main__':
-    num_simulations = 300
-    results = monte_carlo_simulation(num_simulations)
-    for result in results:
-        print(f"Scenario {result['scenario']}:")
-        print(f"  Average Predicted Error (Linear): {result['average_predicted_error_linear']}")
-        print(f"  Average Predicted Error (Deep): {result['average_predicted_error_deep']}")
-        print(f"  Average Linear Coefficients: {result['average_linear_coefficients']}")
-        print(f"  Average Deep Coefficients: {result['average_deep_coefficients']}")
-        print(f"  Std Linear Coefficients: {result['std_linear_coefficients']}")
-        print(f"  Std Deep Coefficients: {result['std_deep_coefficients']}")
+    df = run_simulation(num_simulations=1)
+    plot_boxplot(df)

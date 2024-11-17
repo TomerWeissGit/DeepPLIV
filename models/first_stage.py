@@ -23,7 +23,8 @@ class NeuralNetworkFirstStage(nn.Module):
         x = functional.relu(self.fc1(x))
         x = functional.relu(self.fc2(x))
         x = functional.relu(self.fc3(x))
-        x = self.fc4(x)  # Linear activation for the final layer
+        x = self.fc4(x)# Linear activation for the final layer
+        x = functional.dropout(x, p=0.01)
         return x
 
     @spinner_decorator("Training first stage")
