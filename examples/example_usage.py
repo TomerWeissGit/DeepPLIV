@@ -303,20 +303,6 @@ class NaiveSRISPS:
                   + beta_u * self.u
                   + self.epsilon_y)
 
-    def estimate_naive_regression(self):
-        """
-        Estimate the Naive SR-IV model using a simple linear regression model.
-        :return: np.array, the coefficients of the Naive SR-IV model.
-        """
-        x = np.concatenate((self.x.reshape(-1, 1),
-                            self.g.reshape(-1, 1),
-                            self.x.reshape(-1, 1) * self.g.reshape(-1, 1),
-                            self.z.reshape(-1, 1)),
-                           axis=1)
-        y = self.y
-        model = LinearRegression()
-        model.fit(x, y)
-        return model.coef_
 
     def estimate_naive_regression(self):
         """
@@ -380,19 +366,19 @@ class NaiveSRISPS:
         model = LinearRegression()
         model.fit(vars_first_stage, x_first_stage)
         x_predicted = model.predict(vars_second_stage)
-        x_error = x_second_stage.reshape(-1,1) - x_predicted
+        x_error = x_second_stage - x_predicted
 
         x = np.concatenate((x_second_stage.reshape(-1, 1),
                             self.g[5000:].reshape(-1, 1),
                             x_second_stage.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
                             self.z[5000:].reshape(-1, 1),
-                            x_error),
+                            x_error.reshape(-1,1)),
                            axis=1)
         y = self.y[5000:]
         model = LinearRegression()
         model.fit(x, y)
         return model.coef_
-    def estimating_sri_with_nn(self):
+    def estimating_sri_sps_with_nn(self):
         """
         Estimate the 2SLS model using a simple neural network model. - SPS, this class is going to use the DeepPLIV
         model, which is a deep learning model for the 2SLS model.
@@ -401,10 +387,10 @@ class NaiveSRISPS:
 
         vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
         model = DeepPLIV()
-        first_stage_model = model._fit_first_stage(x_first_stage, vars_first_stage, 2000, 0.001)
+        first_stage_model = model._fit_first_stage(x_first_stage, vars_first_stage, 2000, 0.01)
         x_predicted = first_stage_model.predict(vars_second_stage)
         x_error = x_second_stage.reshape(-1,1) - x_predicted
-
+        # sri model
         x = np.concatenate((x_second_stage.reshape(-1, 1),
                             self.g[5000:].reshape(-1, 1),
                             x_second_stage.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
@@ -412,13 +398,22 @@ class NaiveSRISPS:
                             x_error),
                            axis=1)
         y = self.y[5000:]
-        model = LinearRegression()
-        model.fit(x, y)
-        return model.coef_
+        model_sri = LinearRegression()
+        model_sri.fit(x, y)
+        # sps model
+        x = np.concatenate((x_predicted.reshape(-1, 1),
+                            self.g[5000:].reshape(-1, 1),
+                            x_predicted.reshape(-1, 1) * self.g[5000:].reshape(-1, 1),
+                            self.z[5000:].reshape(-1, 1)),
+                           axis=1)
+        model_sps = LinearRegression()
+        model_sps.fit(x, y)
+        return model_sri.coef_, model_sps.coef_
 
 
-def run_simulation(num_simulations=300):
-    naive_srisps = NaiveSRISPS(beta_u=3, beta_3=0.5, gamma_u=1, dependent=0)
+
+
+def run_genetic_epid_simulation(num_simulations=300, beta_u: float =0, beta_3: float=0, dependent: int=0):
     results = {
         'method': [],
         'coefficient': [],
@@ -426,6 +421,7 @@ def run_simulation(num_simulations=300):
     }
 
     for _ in range(num_simulations):
+        naive_srisps = NaiveSRISPS(beta_u=beta_u, beta_3=beta_3, gamma_u=1, dependent=dependent)
         coefficients = naive_srisps.estimate_naive_regression()
         for i, coef in enumerate(coefficients):
             results['method'].append('Naive Regression')
@@ -443,13 +439,18 @@ def run_simulation(num_simulations=300):
             results['method'].append('SRI')
             results['coefficient'].append(f'coef_{i}')
             results['value'].append(coef)
-
-        coefficients = naive_srisps.estimating_sps_with_nn()
-        for i, coef in enumerate(coefficients):
+        # NN model
+        coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn()
+        for i, coef in enumerate(coefficients_sri):
+            results['method'].append('SRI with NN')
+            results['coefficient'].append(f'coef_{i}')
+            results['value'].append(coef)
+        for i, coef in enumerate(coefficients_sps):
             results['method'].append('SPS with NN')
             results['coefficient'].append(f'coef_{i}')
             results['value'].append(coef)
-  #  save_to_pickle(results, 'sim_results_with_nn_model.pkl')
+
+    save_to_pickle(results, f'sim_results_{num_simulations}_{beta_u}_{beta_3}_{'dependent' if dependent==1 else ''}.pkl')
     return pd.DataFrame(results)
 
 
@@ -461,5 +462,14 @@ def plot_boxplot(df):
 
 
 if __name__ == '__main__':
-    df = run_simulation(num_simulations=1)
-    plot_boxplot(df)
+    for beta_u in [0, 1.5, 3]:
+        for beta_3 in [0, 0.5]:
+            for dependent in [0, 1]:
+                run_genetic_epid_simulation(num_simulations=500, beta_u=beta_u, beta_3=beta_3, dependent=dependent)
+
+    # df = pd.read_pickle('sim_results_10_0_0.5_.pkl')
+    # plot_boxplot(df)
+
+
+
+

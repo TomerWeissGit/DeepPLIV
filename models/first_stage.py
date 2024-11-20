@@ -4,14 +4,20 @@ import torch.nn as nn
 import torch.nn.functional as functional
 import torch.optim as optim
 from utils.helpers import EarlyStopping, spinner_decorator
-
+import torchviz
 
 class NeuralNetworkFirstStage(nn.Module):
     def __init__(self, input_dim: int):
         super(NeuralNetworkFirstStage, self).__init__()
+
         self.fc1 = nn.Linear(input_dim, 128)
+        self.act1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(0.2)
         self.fc2 = nn.Linear(128, 32)
+        self.act2 = nn.ReLU()
         self.fc3 = nn.Linear(32, 8)
+        self.act3 = nn.ReLU()
+        self.dropout2 = nn.Dropout(0.2)
         self.fc4 = nn.Linear(8, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -20,11 +26,19 @@ class NeuralNetworkFirstStage(nn.Module):
         :param x: torch.Tensor, the input tensor.
         :return: torch.Tensor, the output tensor.
         """
-        x = functional.relu(self.fc1(x))
-        x = functional.relu(self.fc2(x))
-        x = functional.relu(self.fc3(x))
-        x = self.fc4(x)# Linear activation for the final layer
-        x = functional.dropout(x, p=0.01)
+
+        x = self.act1(self.fc1(x))
+        x = self.dropout1(x)
+        x = self.act2(self.fc2(x))
+        x = self.act3(self.fc3(x))
+        x = self.dropout2(x)
+        x = self.fc4(x)
+
+        # x = functional.dropout(x)
+        # x = functional.relu(self.fc1(x))
+        # x = functional.relu(self.fc2(x))
+        # x = functional.relu(self.fc3(x))
+        # x = self.fc4(x) # Linear activation for the final layer
         return x
 
     @spinner_decorator("Training first stage")
