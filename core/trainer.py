@@ -7,8 +7,8 @@ from models.second_stage import NeuralNetworkSecondStage
 
 class DeepPLIV:
     def __init__(self):
-        self.first_stage_model: NeuralNetworkFirstStage
-        self.second_stage_model: NeuralNetworkSecondStage
+        self.first_stage_model: NeuralNetworkFirstStage = None
+        self.second_stage_model: NeuralNetworkSecondStage = None
         pass
 
     def fit(self, v_1: np.array, z_1: np.array,z_2: np.array, x: np.array, y: np.array,
@@ -31,9 +31,9 @@ class DeepPLIV:
         :param second_stage_learning_rate: the learning rate for training the second stage.
         :return:
         """
-        self._fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate)
-        v_hat = self._predict_first_stage(z_2)
-        self._fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate)
+        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate)
+        v_hat = self.predict_first_stage(z_2)
+        self.fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate)
         return self.first_stage_model, self.second_stage_model
 
     def predict(self,
@@ -45,10 +45,10 @@ class DeepPLIV:
         :param x: the exogenous variable.
         :return: the predicted outcome variable.
         """
-        v_hat = self._predict_first_stage(z)
-        return self._predict_second_stage(v_hat, x)
+        v_hat = self.predict_first_stage(z)
+        return self.predict_second_stage(v_hat, x)
 
-    def _fit_first_stage(self, v_1: np.array, z_1: np.array,
+    def fit_first_stage(self, v_1: np.array, z_1: np.array,
                          epochs_first_stage: int,
                          learning_rate_first_stage: float) -> NeuralNetworkFirstStage:
         """
@@ -63,13 +63,14 @@ class DeepPLIV:
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage)
         return self.first_stage_model
 
-    def _fit_second_stage(self, v_hat: np.array, x: np.array, y: np.array,
+    def fit_second_stage(self, v_hat: np.array, x: np.array, y: np.array,
                           epochs_second_stage: int,
                           learning_rate_second_stage: float) -> NeuralNetworkSecondStage:
         """
         Fit the second stage of the DeepPLIV model.
         :param v_hat: np.array, the dependent variable prediction.
         :param x: np.array, the exogenous variable.
+        :param y: np.array, the outcome variable.
         :param epochs_second_stage: int, the number of epochs for training the second stage.
         :param learning_rate_second_stage: float, the learning rate for training the second stage.
         """
@@ -81,7 +82,7 @@ class DeepPLIV:
                                                learning_rate=learning_rate_second_stage)
         return self.second_stage_model
 
-    def _predict_first_stage(self, z_2: np.array) -> np.array:
+    def predict_first_stage(self, z_2: np.array) -> np.array:
         """
         Predict the endogenous variable.
         :param z_2: np.array, the instrumental variable.
@@ -89,7 +90,7 @@ class DeepPLIV:
         """
         return self.first_stage_model.predict(z_2)
 
-    def _predict_second_stage(self, v_hat: np.array, x: np.array) -> np.array:
+    def predict_second_stage(self, v_hat: np.array, x: np.array) -> np.array:
         """
         Predict the outcome.
         :param v_hat: np.array, the predicted endogenous variable.

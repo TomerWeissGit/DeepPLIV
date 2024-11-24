@@ -2,7 +2,11 @@ import time
 import sys
 import threading
 import itertools
-import numpy as np
+from typing import Iterable
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 
 # Spinner decorator to add loading animation to specific functions
 def spinner_decorator(task_name):
@@ -55,3 +59,15 @@ class EarlyStopping:
         else:
             self.best_loss = val_loss
             self.counter = 0
+
+def save_to_pickle(lst: Iterable, name: str = 'results.pkl'):
+    import pickle
+    with open(name, 'wb') as f:
+        pickle.dump(lst, f)
+
+def plot_boxplot(df):
+    plt.figure(figsize=(12, 8))
+    sns.boxplot(x='coefficient', y='value', hue='method', data=df)
+    plt.title('Coefficient Distribution by Method')
+    plt.show()
+

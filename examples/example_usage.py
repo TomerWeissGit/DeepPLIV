@@ -1,14 +1,12 @@
 import multiprocessing as mp
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from sklearn.linear_model import LinearRegression
 from typing_extensions import Literal
 
 from core.trainer import DeepPLIV
-from utils.helpers import spinner_decorator
+from utils.helpers import spinner_decorator, save_to_pickle
 
 
 class SimDataCreator:
@@ -157,97 +155,77 @@ class SimDataCreator:
             return sum_coefficients + binomial_part + z_b_3 * z_b_4 + gamma_u_eta
 
 
-def run_simulation(scenario, p=20, n=2000, beta_1=0.5, beta_u=1, gamma_u=1, std_epsilon=1, std_eta=1,
-                   first_stage_epochs=3000, first_stage_learning_rate=0.01, second_stage_epochs=3000,
-                   second_stage_learning_rate=0.01):
-    deep_pliv = DeepPLIV()
-    data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
-    v, z = data.v, data.z
+class NaiveSimulation:
+    @staticmethod
+    def run_simulation_naive(scenario, p=20, n=2000, beta_1=0.5, beta_u=1, gamma_u=1, std_epsilon=1, std_eta=1,
+                       first_stage_epochs=3000, first_stage_learning_rate=0.01, second_stage_epochs=3000,
+                       second_stage_learning_rate=0.01):
+        deep_pliv = DeepPLIV()
+        data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
+        v, z = data.v, data.z
 
-    deep_pliv._fit_first_stage(v, z, first_stage_epochs, first_stage_learning_rate)
-    first_stage_2sls_model = LinearRegression()
-    first_stage_2sls_model.fit(z, v)
+        deep_pliv.fit_first_stage(v, z, first_stage_epochs, first_stage_learning_rate)
+        first_stage_2sls_model = LinearRegression()
+        first_stage_2sls_model.fit(z, v)
 
-    data_2 = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
-    z_second = data_2.z
+        data_2 = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
+        z_second = data_2.z
 
-    z_predicted_linear_regression = first_stage_2sls_model.predict(z_second)
-    v_predicted = deep_pliv._predict_first_stage(z_second)
+        z_predicted_linear_regression = first_stage_2sls_model.predict(z_second)
+        v_predicted = deep_pliv.predict_first_stage(z_second)
 
-    v_pred_error_linear_regression = z_predicted_linear_regression - data_2.v
-    v_pred_error = v_predicted - data_2.v
+        v_pred_error_linear_regression = z_predicted_linear_regression - data_2.v
+        v_pred_error = v_predicted - data_2.v
 
-    x = np.concatenate((v_pred_error, np.ones((n, 1))), axis=1)
-    y = data_2.y
-    v = data_2.v.reshape(-1, 1)
+        x = np.concatenate((v_pred_error, np.ones((n, 1))), axis=1)
+        y = data_2.y
+        v = data_2.v.reshape(-1, 1)
 
-    second_stage_linear_model = LinearRegression()
-    x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))),
-                                         axis=1)
-    x_all = np.concatenate((x_linear_regression, v), axis=1)
-    second_stage_linear_model.fit(x_all, y)
+        second_stage_linear_model = LinearRegression()
+        x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))),
+                                             axis=1)
+        x_all = np.concatenate((x_linear_regression, v), axis=1)
+        second_stage_linear_model.fit(x_all, y)
 
-    deep_pliv._fit_second_stage(v, x, y, second_stage_epochs, second_stage_learning_rate)
-    y_predicted = deep_pliv._predict_second_stage(v, x)
-    predicted_error_deep = np.sqrt(((y_predicted - y) ** 2).mean())
+        deep_pliv.fit_second_stage(v, x, y, second_stage_epochs, second_stage_learning_rate)
+        y_predicted = deep_pliv.predict_second_stage(v, x)
+        predicted_error_deep = np.sqrt(((y_predicted - y) ** 2).mean())
 
-    return {
-        'scenario': scenario,
-        'predicted_error_linear': np.sqrt(((second_stage_linear_model.predict(x_all) - y) ** 2).mean()),
-        'predicted_error_deep': predicted_error_deep,
-        'linear_coefficients': second_stage_linear_model.coef_[-1],
-        'deep_coefficients': deep_pliv.get_v_predicted_coefficient()
-    }
+        return {
+            'scenario': scenario,
+            'predicted_error_linear': np.sqrt(((second_stage_linear_model.predict(x_all) - y) ** 2).mean()),
+            'predicted_error_deep': predicted_error_deep,
+            'linear_coefficients': second_stage_linear_model.coef_[-1],
+            'deep_coefficients': deep_pliv.get_v_predicted_coefficient()
+        }
 
+    @staticmethod
+    def run_naive_scenario_simulations(scenario, num_simulations):
+        scenario_results = []
+        for i in range(num_simulations):
+            result = NaiveSimulation.run_simulation_naive(scenario)
+            scenario_results.append(result)
+            save_to_pickle(scenario_results, f'scenario_{scenario}_{num_simulations}_results.pkl')
+            print(f"Iteration {i + 1}/{num_simulations} for scenario {scenario}")
+        return {
+            'scenario': scenario,
+            'average_predicted_error_linear': np.mean([r['predicted_error_linear'] for r in scenario_results]),
+            'average_predicted_error_deep': np.mean([r['predicted_error_deep'] for r in scenario_results]),
+            'average_linear_coefficients': np.mean([r['linear_coefficients'] for r in scenario_results], axis=0),
+            'average_deep_coefficients': np.mean([r['deep_coefficients'] for r in scenario_results]),
+            'std_linear_coefficients': np.std([r['linear_coefficients'] for r in scenario_results], axis=0),
+            'std_deep_coefficients': np.std([r['deep_coefficients'] for r in scenario_results])
+        }
 
-def run_scenario_simulations(scenario, num_simulations):
-    scenario_results = []
-    for i in range(num_simulations):
-        result = run_simulation(scenario)
-        scenario_results.append(result)
-        save_to_pickle(scenario_results, f'scenario_{scenario}_{num_simulations}_results.pkl')
-        print(f"Iteration {i + 1}/{num_simulations} for scenario {scenario}")
-    return {
-        'scenario': scenario,
-        'average_predicted_error_linear': np.mean([r['predicted_error_linear'] for r in scenario_results]),
-        'average_predicted_error_deep': np.mean([r['predicted_error_deep'] for r in scenario_results]),
-        'average_linear_coefficients': np.mean([r['linear_coefficients'] for r in scenario_results], axis=0),
-        'average_deep_coefficients': np.mean([r['deep_coefficients'] for r in scenario_results]),
-        'std_linear_coefficients': np.std([r['linear_coefficients'] for r in scenario_results], axis=0),
-        'std_deep_coefficients': np.std([r['deep_coefficients'] for r in scenario_results])
-    }
-
-
-def monte_carlo_simulation(num_simulations=100):
-    with mp.Pool(processes=5) as pool:
-        results = pool.starmap(run_scenario_simulations, [(scenario, num_simulations) for scenario in range(1, 6)])
-    return results
-
-
-def save_to_pickle(lst: list, name: str = 'results.pkl'):
-    import pickle
-    with open(name, 'wb') as f:
-        pickle.dump(lst, f)
+    @staticmethod
+    def monte_carlo_simulation(num_simulations=100):
+        with mp.Pool(processes=5) as pool:
+            results = pool.starmap(NaiveSimulation.run_naive_scenario_simulations, [(scenario, num_simulations) for scenario in range(1, 6)])
+        return results
 
 
-# if __name__ == '__main__':
-#     num_simulations = 1
-#     results = monte_carlo_simulation(num_simulations)
-#     save_to_pickle(results, '1_results_n_2000_20_beta1_05.pkl')
-#     for result in results:
-#         print(f"Scenario {result['scenario']}:")
-#         print(f"  Average Predicted Error (Linear): {result['average_predicted_error_linear']}")
-#         print(f"  Average Predicted Error (Deep): {result['average_predicted_error_deep']}")
-#         print(f"  Average Linear Coefficients: {result['average_linear_coefficients']}")
-#         print(f"  Average Deep Coefficients: {result['average_deep_coefficients']}")
-#         print(f"  Std Linear Coefficients: {result['std_linear_coefficients']}")
-#         print(f"  Std Deep Coefficients: {result['std_deep_coefficients']}")
 
-# with open('results.pkl', 'rb') as f:
-#     results = pickle.load(f)
 
-# Y = \beta_0 + \beta_1 * X + \beta_2 * G + \beta_3 * XG + \beta_z * Z + \beta_u * U + \epsilon_Y
-# X = \gamma_0 + \gamma_iv * G_iv + \gamma_z * Z + \gamma_u * U + \epsilon_X
 class NaiveSRISPS:
 
     def __init__(self, beta_u: float = 0, beta_3: float = 0, gamma_u: float = 1, dependent: int = 0):
@@ -387,7 +365,7 @@ class NaiveSRISPS:
 
         vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
         model = DeepPLIV()
-        first_stage_model = model._fit_first_stage(x_first_stage, vars_first_stage, 2000, 0.01)
+        first_stage_model = model.fit_first_stage(x_first_stage, vars_first_stage, 2000, 0.01)
         x_predicted = first_stage_model.predict(vars_second_stage)
         x_error = x_second_stage.reshape(-1,1) - x_predicted
         # sri model
@@ -413,7 +391,7 @@ class NaiveSRISPS:
 
 
 
-def run_genetic_epid_simulation(num_simulations=300, beta_u: float =0, beta_3: float=0, dependent: int=0):
+def run_genetic_simulation(num_simulations=300, beta_u: float =0, beta_3: float=0, dependent: int=0):
     results = {
         'method': [],
         'coefficient': [],
@@ -454,18 +432,12 @@ def run_genetic_epid_simulation(num_simulations=300, beta_u: float =0, beta_3: f
     return pd.DataFrame(results)
 
 
-def plot_boxplot(df):
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(x='coefficient', y='value', hue='method', data=df)
-    plt.title('Coefficient Distribution by Method')
-    plt.show()
-
 
 if __name__ == '__main__':
-    for beta_u in [0, 1.5, 3]:
-        for beta_3 in [0, 0.5]:
-            for dependent in [0, 1]:
-                run_genetic_epid_simulation(num_simulations=500, beta_u=beta_u, beta_3=beta_3, dependent=dependent)
+    for beta_u_ in [0, 1.5, 3]:
+        for beta_3_ in [0, 0.5]:
+            for dependent_ in [0, 1]:
+                run_genetic_simulation(num_simulations=500, beta_u=beta_u_, beta_3=beta_3_, dependent=dependent_)
 
     # df = pd.read_pickle('sim_results_10_0_0.5_.pkl')
     # plot_boxplot(df)
