@@ -1,23 +1,28 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as functional
 import torch.optim as optim
 from utils.helpers import EarlyStopping, spinner_decorator
-import torchviz
 
 class NeuralNetworkFirstStage(nn.Module):
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, dropout: float = 0.4, weight_decay: float = 0.0):
         super(NeuralNetworkFirstStage, self).__init__()
-
+        self.weight_decay = weight_decay
         self.fc1 = nn.Linear(input_dim, 128)
         self.act1 = nn.ReLU()
-        self.dropout1 = nn.Dropout(0.2)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.dropout1 = nn.AlphaDropout(dropout)
+
         self.fc2 = nn.Linear(128, 32)
         self.act2 = nn.ReLU()
+        self.bn2 = nn.BatchNorm1d(32)
+        self.dropout2 = nn.AlphaDropout(dropout)
+
         self.fc3 = nn.Linear(32, 8)
         self.act3 = nn.ReLU()
-        self.dropout2 = nn.Dropout(0.2)
+        self.bn3 = nn.BatchNorm1d(8)
+        self.dropout3 = nn.AlphaDropout(dropout)
+
         self.fc4 = nn.Linear(8, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -27,18 +32,13 @@ class NeuralNetworkFirstStage(nn.Module):
         :return: torch.Tensor, the output tensor.
         """
 
-        x = self.act1(self.fc1(x))
+        x = self.act1(self.bn1(self.fc1(x)))
         x = self.dropout1(x)
-        x = self.act2(self.fc2(x))
-        x = self.act3(self.fc3(x))
+        x = self.act2(self.bn2(self.fc2(x)))
         x = self.dropout2(x)
+        x = self.act3(self.bn3(self.fc3(x)))
+        x = self.dropout3(x)
         x = self.fc4(x)
-
-        # x = functional.dropout(x)
-        # x = functional.relu(self.fc1(x))
-        # x = functional.relu(self.fc2(x))
-        # x = functional.relu(self.fc3(x))
-        # x = self.fc4(x) # Linear activation for the final layer
         return x
 
     @spinner_decorator("Training first stage")
@@ -46,7 +46,7 @@ class NeuralNetworkFirstStage(nn.Module):
                        learning_rate: float,
                        early_stopping_patience: int = 100,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 10000) -> None:
+                       print_every_x: int = 200) -> None:
         """
         Train the neural network model.
         :param x: np.array, the input data.
@@ -63,7 +63,7 @@ class NeuralNetworkFirstStage(nn.Module):
 
         # Define the loss function and the optimizer
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate, weight_decay=self.weight_decay)
 
         # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)

@@ -1,5 +1,4 @@
 import numpy as np
-# from sklearn.linear_model import LinearRegression
 
 from models.first_stage import NeuralNetworkFirstStage
 from models.second_stage import NeuralNetworkSecondStage
@@ -50,16 +49,22 @@ class DeepPLIV:
 
     def fit_first_stage(self, v_1: np.array, z_1: np.array,
                          epochs_first_stage: int,
-                         learning_rate_first_stage: float) -> NeuralNetworkFirstStage:
+                         learning_rate_first_stage: float,
+                        dropout = 0.2, weight_decay = 0.0) -> NeuralNetworkFirstStage:
         """
         Fit the DeepPLIV model.
         :param v_1: np.array, the dependent variable.
         :param z_1: np.array, the instrumental variable.
         :param epochs_first_stage: int, the number of epochs for training the first stage.
         :param learning_rate_first_stage: float, the learning rate for training the first stage.
+        :param dropout: float, the dropout rate for the first stage model.
+        :param weight_decay: float, the weight decay for the first stage model.
+        :return: NeuralNetworkFirstStage, the trained first stage model.
         """
 
-        self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1])
+        self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1],
+                                                         dropout=dropout,
+                                                         weight_decay= weight_decay)
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage)
         return self.first_stage_model
 
@@ -107,56 +112,3 @@ class DeepPLIV:
         # Assuming the first layer of the second stage model is a linear layer
         return self.second_stage_model.final_layer.weight[0, -1].item()
     pass
-
-
-# if __name__ == '__main__':
-#     from examples.example_usage import SimDataCreator
-#     from typing import Literal
-#     deep_pliv = DeepPLIV()
-#     p = 100
-#     n = 500
-#     beta_1 = 0.5
-#     beta_u = 10
-#     gamma_u = 2
-#     std_epsilon = 3
-#     std_eta = 3
-#     scenario: Literal[1, 2, 3, 4, 5] = 5
-#     data = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
-#     v = data.v
-#     z = data.z
-#     first_stage_epochs = 5000
-#     first_stage_learning_rate = 0.05
-#     first_stage_model = deep_pliv._fit_first_stage(v, z, first_stage_epochs, first_stage_learning_rate)
-#     first_stage_2sls_model = LinearRegression()
-#     first_stage_2sls_model.fit(z, v)
-#     data_2 = SimDataCreator(p, n, beta_1, beta_u, gamma_u, std_epsilon, std_eta, scenario)
-#     z_second = data_2.z
-#     z_predicted_linear_regression = first_stage_2sls_model.predict(z_second)
-#     v_predicted = deep_pliv._predict_first_stage(z_second)
-#
-#     v_pred_error_linear_regression = z_predicted_linear_regression - data_2.v
-#     v_pred_error = v_predicted-data_2.v
-#     predicted_error = np.sqrt((v_pred_error ** 2).mean())
-#     print(f"Predicted error: {predicted_error}")
-#     x = np.concatenate((v_pred_error, np.ones((n, 1))), axis=1)
-#     y = data_2.y
-#     v = data_2.v.reshape(-1, 1)
-#     second_stage_epochs = 5000
-#     second_stage_learning_rate = 0.01
-#     # v_predicted = np.concatenate((v_predicted, np.ones((n, 1))), axis=1)
-#
-#     second_stage_linear_model = LinearRegression()
-#     x_linear_regression = np.concatenate(((v_pred_error_linear_regression - data_2.v).reshape(-1, 1), np.ones((n, 1))),
-#                                          axis=1)
-#     x_all = np.concatenate((x_linear_regression, v), axis=1)
-#     second_stage_linear_model.fit(x_all, y)
-#
-#     second_stage_model = deep_pliv._fit_second_stage(v, x, y, second_stage_epochs, second_stage_learning_rate)
-#     y_predicted = deep_pliv._predict_second_stage(v, x)
-#     predicted_error = np.sqrt(((y_predicted - y) ** 2).mean())
-#     print('deep_coefs:', deep_pliv.get_v_predicted_coefficient())
-#     print('linear_coefs:', second_stage_linear_model.coef_[-1])
-#     print(f"Predicted error deep: {predicted_error}")
-#     print(f"Predicted error linear: {np.sqrt(((second_stage_linear_model.predict(x_all) - y) ** 2).mean())}")
-#
-#
