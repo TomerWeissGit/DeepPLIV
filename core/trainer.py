@@ -50,7 +50,8 @@ class DeepPLIV:
     def fit_first_stage(self, v_1: np.array, z_1: np.array,
                          epochs_first_stage: int,
                          learning_rate_first_stage: float,
-                        dropout = 0.2, weight_decay = 0.0) -> NeuralNetworkFirstStage:
+                        dropout = 0.2, weight_decay = 0.0 , l1_lambda:float = 0.0,
+                        validation_data: tuple = None) -> NeuralNetworkFirstStage:
         """
         Fit the DeepPLIV model.
         :param v_1: np.array, the dependent variable.
@@ -59,13 +60,18 @@ class DeepPLIV:
         :param learning_rate_first_stage: float, the learning rate for training the first stage.
         :param dropout: float, the dropout rate for the first stage model.
         :param weight_decay: float, the weight decay for the first stage model.
+        :param l1_lambda: float, the L1 regularization parameter.
+        :param validation_data: tuple, the validation data.
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
 
         self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1],
                                                          dropout=dropout,
-                                                         weight_decay= weight_decay)
-        self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage)
+                                                         weight_decay= weight_decay,
+                                                         l1_lambda=l1_lambda)
+        validation_data = validation_data  # Assuming the validation data is the same as the training data
+        self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
+                                              validation_data=validation_data)
         return self.first_stage_model
 
     def fit_second_stage(self, v_hat: np.array, x: np.array, y: np.array,

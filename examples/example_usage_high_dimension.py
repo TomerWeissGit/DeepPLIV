@@ -6,7 +6,10 @@ from sklearn.model_selection import KFold
 
 from core.trainer import DeepPLIV
 from utils.helpers import plot_boxplot
-
+from skopt.callbacks import EarlyStopper
+from skopt import gp_minimize
+from skopt.space import Real
+from skopt.utils import use_named_args
 
 class SimDataCreatorHighDimension:
     def __init__(self,
@@ -44,26 +47,29 @@ class SimDataCreatorHighDimension:
         self.u = np.random.normal(0, 1, n)
         self.g_iv = np.random.binomial(2, 0.3, size=(n, p)) - np.mean(np.random.binomial(2, 0.3, size=(n, p)), axis=0)
         self.g = np.random.binomial(2, 0.3, size=n) - np.mean(np.random.binomial(2, 0.3, size=n))
+        self.strong_indicator = np.random.choice(self.p, self.non_null_iv, replace=False)
+        self.weak_indicator = np.setdiff1d(np.arange(self.p), self.strong_indicator)
 
         self._generate_gamma_iv(coef = gamma_iv)
         self.x_df = self._generate_x_df()
         self.y_df = self._generate_y_df()
 
+
     def _generate_gamma_iv(self, coef: float = 0.05):
-        strong_indicator = np.random.choice(self.p, self.non_null_iv, replace=False)
-        weak_indicator = np.setdiff1d(np.arange(self.p), strong_indicator)
-        self.gamma_iv[strong_indicator] = np.random.normal(coef, 1 / self.n, size=self.non_null_iv)
-        self.gamma_iv[weak_indicator] = np.random.normal(0, 1 / self.n, size=self.p - self.non_null_iv)
+        self.gamma_iv[self.strong_indicator] = np.random.normal(coef, 1 / self.n, size=self.non_null_iv)
+        self.gamma_iv[self.weak_indicator] = np.random.normal(0, 1 / self.n, size=self.p - self.non_null_iv)
 
     @staticmethod
     def _standardize(x):
-        return x / np.std(x)
+        return x-x.mean() / x.std()
 
     def _generate_x_df(self):
         x_base = self.g_iv @ self.gamma_iv + self.gamma_u * self.u + np.random.normal(0, 1, self.n)
         x_scenario_1 = self._standardize(x_base)
-        x_scenario_2 = self._standardize(x_base + (self.g_iv[:, :2] * self.g_iv[:, :2]).sum(axis=1))
-        x_scenario_3 = self._standardize(x_base + self.g_iv[:, 2] * self.g_iv[:, 3])
+        x_non_linear_1 = ((self.g_iv-1) **2 ) @ self.gamma_iv + self.gamma_u * self.u + np.random.normal(0, 1, self.n)
+        x_scenario_2 = self._standardize(x_non_linear_1)
+        x_non_linear_2 = np.abs(self.g_iv-1.5) @ self.gamma_iv + self.gamma_u * self.u + np.random.normal(0, 1, self.n)
+        x_scenario_3 = self._standardize(x_non_linear_2)
         x_scenario_4 = self._standardize(x_base + (self.g_iv[:, :2] * self.g_iv[:, :2]).sum(axis=1) + self.g_iv[:, 2] * self.g_iv[:, 3])
         x_scenario_5 = self._standardize(x_base + self.g_iv[:, 2] * self.g_iv[:, 3] +
                                              ((self.g_iv[:, 0] < (-0.5)) | (self.g_iv[:, 1] < (-0.5))).astype(int)
@@ -108,14 +114,13 @@ class NaiveSRISPSHighDimension:
     def __init__(self, data_creator: SimDataCreatorHighDimension, scenario: int = 1):
         """
         Initialize the NaiveSRISPSHighDimension class.
-
         :param data_creator: SimDataCreatorHighDimension, an instance of the SimDataCreatorHighDimension class.
+        :param scenario: int, the scenario to consider.
         """
         self.data_creator = data_creator
         self.x_df, self.y_df, self.g_iv, self.g = data_creator.get_data()
         self.x = self.x_df.iloc[:, [scenario-1]].values
         self.y = self.y_df.iloc[:, [scenario-1]].values
-        self.scenario = scenario
 
     def estimate_naive_regression(self):
         """
@@ -134,13 +139,8 @@ class NaiveSRISPSHighDimension:
         :return: tuple of np.array, the data for the first and second stages of the 2SLS model.
         """
         half_n = self.x.shape[0] // 2
-        x_first_stage = self.x[:half_n]
-        g_iv_first_stage = self.g_iv[:half_n]
-
-        vars_first_stage = g_iv_first_stage
-        x_second_stage = self.x[half_n:]
-        g_iv_second_stage = self.g_iv[half_n:]
-        vars_second_stage = g_iv_second_stage
+        x_first_stage, x_second_stage = self.x[:half_n], self.x[half_n:]
+        vars_first_stage, vars_second_stage = self.g_iv[:half_n], self.g_iv[half_n:]
 
         return vars_first_stage, x_first_stage, vars_second_stage, x_second_stage
 
@@ -179,10 +179,17 @@ class NaiveSRISPSHighDimension:
         model.fit(x, y)
         return model.coef_
 
-    def estimating_sri_sps_with_nn(self, weight_decay: float = 0.0, dropout: float = 0.2):
+    def estimating_sri_sps_with_nn(self,
+                                   epochs=2000,
+                                   learning_rate = 0.01,
+                                   weight_decay: float = 0.0,
+                                   dropout: float = 0.0,
+                                   l1_lambda = 0):
         """
         Estimate the 2SLS model using a simple neural network model. - SPS
         :param weight_decay: float, the weight decay for the first stage model.
+        :param epochs: int, the number of epochs for training the first stage.
+        :param learning_rate: float, the learning rate for training the first stage.
         :param dropout: float, the dropout rate for the first stage model.
         :return: tuple of np.array, the coefficients of the Naive SR-IV model.
         """
@@ -190,10 +197,12 @@ class NaiveSRISPSHighDimension:
         vars_first_stage, x_first_stage, vars_second_stage, x_second_stage = self.get_first_and_second_stage_x_data()
         model = DeepPLIV()
         first_stage_model = model.fit_first_stage(x_first_stage, vars_first_stage,
-                                                  2000,
-                                                  0.001,
+                                                  epochs_first_stage=epochs,
+                                                  learning_rate_first_stage=learning_rate,
                                                   weight_decay= weight_decay,
-                                                  dropout = dropout)
+                                                  dropout = dropout,
+                                                  l1_lambda = l1_lambda,
+                                                  validation_data = (vars_second_stage, x_second_stage))
         x_predicted = first_stage_model.predict(vars_second_stage)
         x_error = x_second_stage - x_predicted
 
@@ -209,12 +218,6 @@ class NaiveSRISPSHighDimension:
         model_sps.fit(x_sps, y)
 
         return model_sri.coef_, model_sps.coef_
-
-
-from skopt.callbacks import EarlyStopper
-from skopt import gp_minimize
-from skopt.space import Real
-from skopt.utils import use_named_args
 
 class CustomEarlyStopper(EarlyStopper):
     def __init__(self, patience=10):
@@ -246,64 +249,110 @@ class CustomEarlyStopper(EarlyStopper):
         # Stop if no improvement for `patience` iterations
         return self.no_improvement_count >= self.patience
 
-def cross_validate_nn(data_creator, scenario, weight_decay, dropout, k=3):
-    kf = KFold(n_splits=k)
-    mse_scores = []
+class HyperbandOptimizer:
+    def __init__(self, data_creator, scenario, learning_rate=0.01, epochs=2000):
+        self.data_creator = data_creator
+        self.scenario = scenario
+        self.learning_rate = learning_rate
+        self.epochs = epochs
 
-    for train_index, test_index in kf.split(data_creator.x_df):
-        x_train, x_test = data_creator.x_df.iloc[train_index, [scenario-1]].values, data_creator.x_df.iloc[test_index, [scenario-1]].values
-        g_iv_train, g_iv_test = data_creator.g_iv[train_index], data_creator.g_iv[test_index]
+    def cross_validate_nn(self, weight_decay, dropout, k=3, l1_lambda=0):
+        kf = KFold(n_splits=k)
+        print(f'cv started, scenario: {self.scenario}, weight_decay: {weight_decay}, dropout: {dropout}, l1_lambda: {l1_lambda}')
+        mse_scores = []
 
-        model = DeepPLIV()
-        model.fit_first_stage(x_train, g_iv_train, epochs_first_stage=2000, learning_rate_first_stage=0.01, weight_decay=weight_decay, dropout=dropout)
-        x_predicted = model.predict_first_stage(g_iv_test)
-        mse_scores.append(mean_squared_error(x_test, x_predicted))
+        for train_index, test_index in kf.split(self.data_creator.x_df):
+            x_train, x_test = self.data_creator.x_df.iloc[train_index, [self.scenario-1]].values, self.data_creator.x_df.iloc[test_index, [self.scenario-1]].values
+            g_iv_train, g_iv_test = self.data_creator.g_iv[train_index], self.data_creator.g_iv[test_index]
 
-    return np.mean(mse_scores)
+            model = DeepPLIV()
+            model.fit_first_stage(x_train, g_iv_train,
+                                  epochs_first_stage=self.epochs,
+                                  learning_rate_first_stage=self.learning_rate,
+                                  weight_decay=weight_decay, dropout=dropout, l1_lambda=l1_lambda,
+                                  validation_data=(g_iv_test, x_test))
+            x_predicted = model.predict_first_stage(g_iv_test)
+            mse_scores.append(mean_squared_error(x_test, x_predicted))
 
-def hyperband_nn(data_creator, scenario, max_iter=81):
-    space = [
-        Real(0.001, 0.01, name='weight_decay'),
-        Real(0.01, 0.3, name='dropout')
-    ]
+        return np.mean(mse_scores)
 
-    @use_named_args(space)
-    def objective(**params):
-        weight_decay = params['weight_decay']
-        dropout = params['dropout']
-        mse = cross_validate_nn(data_creator, scenario, weight_decay, dropout, k=3)
-        return mse
+    def hyperband_nn(self, max_iter=16):
+        space = [
+            Real(0, 0.05, name='weight_decay'),
+            Real(0, 0.5, name='dropout'),
+            Real(0, 0.5, name='l1_lambda')
+        ]
 
-    # Use the custom early stopper with patience of 10 iterations
-    early_stopper = CustomEarlyStopper(patience=10)
-    result = gp_minimize(objective, space, n_calls=max_iter, callback=[early_stopper])
+        @use_named_args(space)
+        def objective(**params):
+            weight_decay = params['weight_decay']
+            dropout = params['dropout']
+            l1_lambda = params['l1_lambda']
+            mse = self.cross_validate_nn(weight_decay=weight_decay, dropout=dropout, k=3, l1_lambda=l1_lambda)
+            return mse
 
-    best_params = result.x
-    best_weight_decay = best_params[0]
-    best_dropout = best_params[1]
-    best_mse = result.fun
+        early_stopper = CustomEarlyStopper(patience=10)
+        result = gp_minimize(objective, space, n_calls=max_iter, callback=[early_stopper])
 
-    return best_weight_decay, best_dropout, best_mse
+        best_params = result.x
+        best_weight_decay = best_params[0]
+        best_dropout = best_params[1]
+        best_lambda = best_params[2]
+        best_mse = result.fun
 
+        return best_weight_decay, best_dropout, best_lambda, best_mse
 
-def run_high_dimension_genetic_simulation(num_simulations=10, beta_u: float =0, beta_3: float=0, scenario =5):
+def run_high_dimension_genetic_simulation(num_simulations=10,
+                                          beta_u: float =0,
+                                          beta_3: float=0,
+                                          beta_2: float=0.5,
+                                          beta_1: float=1,
+                                          scenario =1,
+                                          n = 5000,
+                                          p = 1000,
+                                          gamma_iv = 0.1,
+                                          gamma_u = 1,
+                                          non_null_iv = 20,
+                                          learning_rate = 0.01,
+                                          epochs = 2000):
+    """
+    Run the genetic simulation for the high-dimensional case.
+     The simulation generates data using the SimDataCreatorHighDimension class
+     and estimates the Naive SR-IV, SPS, and SRI models.
+    :param num_simulations: parameter to control the number of simulations.
+    :param beta_u: parameter to control the coefficient for the confounding variable.
+    :param beta_3: parameter to control the coefficient for the interaction term between
+    the endogenous and exogenous variables.
+    :param beta_2: parameter to control the coefficient for the exogenous variable.
+    :param beta_1: parameter to control the coefficient for the endogenous variable.
+    :param scenario: parameter to control the scenario to consider.
+    :param n: parameter to control the number of samples.
+    :param p: parameter to control the number of features (in the first stage).
+    :param gamma_iv: parameter to control the coefficient for the instrumental variables.
+    :param gamma_u: parameter to control the coefficient for the confounding variable.
+    :param non_null_iv: parameter to control the number of non-null instrumental variables.
+    :param learning_rate: parameter to control the learning rate for the neural network model.
+    :param epochs: parameter to control the number of epochs for training the neural network model.
+    :return: pd.DataFrame, the results of the simulation.
+    """
     results = {
         'method': [],
         'coefficient': [],
         'value': []
     }
 
-    data_creator = SimDataCreatorHighDimension(n=5000, p=1000, beta_1=1, beta_2=0.5, beta_3=beta_3, beta_u=beta_u,
-                                               gamma_u=1, non_null_iv=20, gamma_iv=0.1)
+    data_creator = SimDataCreatorHighDimension(n=n, p=p, beta_1=beta_1, beta_2=beta_2, beta_3=beta_3, beta_u=beta_u,
+                                               gamma_u=gamma_u, non_null_iv=non_null_iv, gamma_iv=gamma_iv)
 
-    best_weight_decay, best_dropout, best_mse = hyperband_nn(data_creator, scenario)
-    #best_weight_decay, best_dropout, best_mse = 0.003, 0.07, 0.85
-
-    print(f'Best weight_decay: {best_weight_decay}, Best dropout: {best_dropout}, Best MSE: {best_mse}')
+    # optimizer = HyperbandOptimizer(data_creator, scenario, learning_rate=learning_rate, epochs=epochs)
+    # best_weight_decay, best_dropout, best_lambda, best_mse = optimizer.hyperband_nn()    # best_weight_decay, best_dropout, best_lambda, best_mse = 0.0033, 0.01, 0.155, 0.88
+    best_weight_decay, best_dropout, best_lambda, best_mse = 0.05, 0, 0.3, 0.88
+    print(f'Best weight_decay: {best_weight_decay}, Best dropout: {best_dropout},'
+          f' Best lambda:{best_lambda},Best MSE: {best_mse}')
 
     for _ in range(num_simulations):
-        data_creator = SimDataCreatorHighDimension(n=5000, p=1000, beta_1=1, beta_2=0.5, beta_3=beta_3, beta_u=beta_u,
-                                                   gamma_u=1, non_null_iv=20, gamma_iv=0.1)
+        data_creator = SimDataCreatorHighDimension(n=n, p=p, beta_1=beta_1, beta_2=beta_2, beta_3=beta_3, beta_u=beta_u,
+                                                   gamma_u=gamma_u, non_null_iv=non_null_iv, gamma_iv=gamma_iv)
 
         naive_srisps = NaiveSRISPSHighDimension(data_creator=data_creator, scenario=scenario)
         coefficients = naive_srisps.estimate_naive_regression()
@@ -324,7 +373,10 @@ def run_high_dimension_genetic_simulation(num_simulations=10, beta_u: float =0, 
             results['coefficient'].append(f'coef_{i}')
             results['value'].append(coef)
         # NN model
-        coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn(weight_decay=best_weight_decay,
+        coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn(learning_rate=learning_rate,
+                                                                                     epochs = epochs,
+                                                                                     l1_lambda =best_lambda,
+                                                                                     weight_decay=best_weight_decay,
                                                                                      dropout=best_dropout)
         for i, coef in enumerate(coefficients_sri[0]):
             results['method'].append('SRI with NN')
@@ -340,8 +392,30 @@ def run_high_dimension_genetic_simulation(num_simulations=10, beta_u: float =0, 
     return results_df
 
 if __name__ == '__main__':
-    for beta_u_ in [1.5]:
+    lr = 0.005
+    num_simulations: int = 500
+    beta_2: float = 1
+    beta_1: float = -1
+    scenario: int = 2
+    n: int = 10000
+    p: int = 60
+    gamma_iv : float = 0.05
+    gamma_u : float = 1
+    epochs : int = 2000
+    non_null_iv: int = 20
+    for beta_u_ in [1]:
         for beta_3_ in [0.5]:
-            run_high_dimension_genetic_simulation(num_simulations=10, beta_u=beta_u_, beta_3=beta_3_)
-    df = pd.read_pickle('high_dim_sim_results_10_1.5_0.5_5.pkl')
-    plot_boxplot(df)
+            res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
+                                                  beta_u=beta_u_,
+                                                  beta_3=beta_3_,
+                                                  scenario=scenario,
+                                                  p=p,
+                                                  n=n,
+                                                  beta_1=beta_1,
+                                                  beta_2=beta_2,
+                                                  gamma_iv=gamma_iv,
+                                                  gamma_u=gamma_u,
+                                                  non_null_iv = non_null_iv,
+                                                  learning_rate=lr,
+                                                  epochs = epochs)
+    plot_boxplot(res, y_line=beta_1)

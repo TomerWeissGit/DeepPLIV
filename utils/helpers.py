@@ -65,9 +65,11 @@ def save_to_pickle(lst: Iterable, name: str = 'results.pkl'):
     with open(name, 'wb') as f:
         pickle.dump(lst, f)
 
-def plot_boxplot(df):
+def plot_boxplot(df, y_line: float = None):
     plt.figure(figsize=(12, 8))
     sns.boxplot(x='coefficient', y='value', hue='method', data=df)
+    if y_line:
+        plt.hlines(y=y_line, xmin=-1, xmax=4, colors='r', linestyles='--', lw=2)
     plt.title('Coefficient Distribution by Method')
     plt.show()
 
