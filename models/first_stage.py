@@ -5,155 +5,40 @@ from utils.helpers import EarlyStopping, spinner_decorator
 import torch.optim as optim
 import optuna
 
-class NeuralNetworkFirstStage(nn.Module):
-    def __init__(self, input_dim: int, weight_decay: float = 0.0, l1_lambda=0):
-        super(NeuralNetworkFirstStage, self).__init__()
-        self.weight_decay = weight_decay
-        self.act = nn.ReLU()
-        self.l1_lambda = l1_lambda
-
-        self.fc1 = nn.Linear(input_dim, input_dim//4)
-        self.bn1 = nn.BatchNorm1d(input_dim//4)
-        self.fc2 = nn.Linear(input_dim//4, input_dim//8)
-        self.bn2 = nn.BatchNorm1d(input_dim//8)
-        self.output= nn.Linear(input_dim//8, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the neural network.
-        :param x: torch.Tensor, the input tensor.
-        :return: torch.Tensor, the output tensor.
-        """
-
-        x = self.act(self.bn1(self.fc1(x)))
-        x = self.act(self.bn2(self.fc2(x)))
-        x = self.output(x)
-        return x
-
-    @spinner_decorator("Training first stage")
-    def train_new_data(self, x: np.array, y: np.array, epochs: int,
-                       learning_rate: float,
-                       validation_data: tuple = None,
-                       early_stopping_patience: int = 100,
-                       early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 50) -> None:
-        """
-        Train the neural network model.
-        :param x: np.array, the input data.
-        :param y: np.array, the outcome data.
-        :param epochs: int, the number of desired epochs.
-        :param learning_rate: float, the learning rate for the optimizer.
-        :param validation_data: tuple, the validation data.
-        :param early_stopping_patience: int, how many epochs to wait before stopping when loss is not improving.
-        :param early_stopping_min_delta: float, minimum change in the monitored quantity to qualify as an improvement.
-        :param print_every_x: int, print the loss for every x epochs.
-        """
-        # Convert numpy arrays to torch tensors
-        x_tensor = torch.tensor(x, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
-        x_val_tensor = torch.tensor(validation_data[0], dtype=torch.float32)
-        y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).view(-1, 1)
-
-        # Define the loss function and the optimizer
-        criterion = nn.MSELoss()
-        optimizer = optim.Adagrad(self.parameters(), lr=learning_rate, weight_decay=self.weight_decay)
-
-        # Initialize early stopping
-        early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
-
-        # Training loop
-        counter = 0
-        for epoch in range(epochs):
-            running_loss = 0.0
-
-
-            optimizer.zero_grad()
-
-            # Forward pass
-            outputs = self(x_tensor)
-            loss = criterion(outputs, y_tensor)
-
-            # Add L1 regularization to feature selector weights
-            l1_loss = 0.0
-            for param in self.fc1.parameters():
-                l1_loss += torch.norm(param, 1)  # L1 norm of weights
-
-            total_loss = loss + self.l1_lambda * l1_loss
-
-            # Backward pass and optimization
-            total_loss.backward()
-            optimizer.step()
-
-            running_loss += total_loss.item()
-
-            # Print the loss for every epoch
-            if validation_data is not None:
-                with torch.no_grad():
-                    val_outputs = self(x_val_tensor)
-                    val_loss = criterion(val_outputs, y_val_tensor).item()
-                if counter % print_every_x == 0:
-                    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss: .4f}')
-            else:
-                if counter % print_every_x == 0:
-                    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
-
-            counter += 1
-            # check early stopping
-            early_stopping(val_loss)
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
-
-    def predict(self, x_new: np.array) -> np.array:
-        """
-        Predict the outcome for new input data.
-        :param x_new: np.array, the new input data.
-        :return: np.array, the predicted outcomes.
-        """
-        # Convert numpy array to torch tensor
-        x_new_tensor = torch.tensor(x_new, dtype=torch.float32)
-
-        # Set the model to evaluation mode
-        self.eval()
-
-        # Disable gradient computation
-        with torch.no_grad():
-            # Forward pass
-            predictions = self(x_new_tensor)
-
-        # Convert predictions to numpy array and return
-        return predictions.numpy()
-
 
 class NeuralNetworkFirstStageWithL1(nn.Module):
-    def __init__(self, input_dim: int, weight_decay: float = 0.0, l1_lambda: float = 0.0):
+    def __init__(self, input_dim: int, l1_lambda: float = 0.0):
         """
         :param input_dim: int, number of input features.
-        :param weight_decay: float, L2 regularization strength for the optimizer.
         :param l1_lambda: float, L1 regularization strength for all layers.
         """
         super(NeuralNetworkFirstStageWithL1, self).__init__()
-
-        self.weight_decay = weight_decay
+        self.input_dim = input_dim
         self.l1_lambda = l1_lambda
         self.act = nn.ReLU()
 
         # Define layers
-        self.fc1 = nn.Linear(input_dim, input_dim // 4)
-        self.bn1 = nn.BatchNorm1d(input_dim // 4)
+        self.fc1 = nn.Linear(input_dim, (input_dim // 4)+1)
+        self.bn1 = nn.BatchNorm1d((input_dim // 4)+1)
 
-        # self.fc2 = nn.Linear(input_dim // 4, input_dim // 8)
-        # self.bn2 = nn.BatchNorm1d(input_dim // 8)
+        self.fc2 = nn.Linear((input_dim // 4)+1, (input_dim // 8)+1)
+        self.bn2 = nn.BatchNorm1d((input_dim // 8)+1)
 
-        self.fc5 = nn.Linear(input_dim // 4, 1)
+        self.fc3 = nn.Linear((input_dim // 8)+1, (input_dim // 16)+1)
+        self.bn3 = nn.BatchNorm1d((input_dim // 16) + 1)
 
+
+        self.output =nn.Linear((input_dim // 16) + 1, 1) if (input_dim>500) else nn.Linear((input_dim // 8) + 1, 1)
+        self.layers = [self.fc1, self.fc2, self.fc3] if input_dim>500 else [self.fc1, self.fc2]
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the neural network.
         """
         x = self.act(self.bn1(self.fc1(x)))
-        # x = self.act(self.bn2(self.fc2(x)))
-        x = self.fc5(x)
+        x = self.act(self.bn2(self.fc2(x)))
+        if self.input_dim > 500:
+            x = self.act(self.bn3(self.fc3(x)))
+        x = self.output(x)
         return x
 
     def compute_l1_regularization(self) -> torch.Tensor:
@@ -161,7 +46,7 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
         Compute the L1 regularization for all layers in the network.
         """
         l1_loss = 0.0
-        for layer in [self.fc1, self.fc5]:
+        for layer in self.layers:
             for param in layer.parameters():
                 l1_loss += torch.norm(param, 1)  # L1 norm of weights
         return self.l1_lambda * l1_loss
@@ -172,63 +57,68 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
                        validation_data: tuple = None,
                        early_stopping_patience: int = 100,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 50) -> None:
+                       print_every_x: int = 100) -> None:
         """
         Train the neural network model.
         """
         if self.l1_lambda is None:
-            best_lambda, best_val_loss = self._optimize_lambda_with_optuna(x, y, validation_data, epochs,
-                                                                           learning_rate, early_stopping_patience,
-                                                                           early_stopping_min_delta, n_trials=10)
-            print(f"Optimal l1_lambda found: {best_lambda}, Validation Loss: {best_val_loss}")
-            self.l1_lambda = best_lambda  # Update the model's lambda
+            best_lambda = self._optimize_lambda_with_optuna(x,
+                                                            y,
+                                                            validation_data,
+                                                            epochs,
+                                                            learning_rate,
+                                                            early_stopping_patience,
+                                                            early_stopping_min_delta,
+                                                            n_trials=30)
+            print(f"Optimal l1_lambda found: {best_lambda}")
+            self.l1_lambda = best_lambda
+            # Update the model's lambda
         else:
             self.l1_lambda = self.l1_lambda
+            # Convert numpy arrays to torch tensors
+            x_tensor = torch.tensor(x, dtype=torch.float32)
+            y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+            x_val_tensor = torch.tensor(validation_data[0], dtype=torch.float32)
+            y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).view(-1, 1)
 
-        # Convert numpy arrays to torch tensors
-        x_tensor = torch.tensor(x, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
-        x_val_tensor = torch.tensor(validation_data[0], dtype=torch.float32)
-        y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).view(-1, 1)
+            # Define the loss function and the optimizer
+            criterion = nn.MSELoss()
+            optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
 
-        # Define the loss function and the optimizer
-        criterion = nn.MSELoss()
-        optimizer = optim.Adagrad(self.parameters(), lr=learning_rate, weight_decay=self.weight_decay)
+            # Initialize early stopping
+            early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
 
-        # Initialize early stopping
-        early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
+            # Training loop
+            for epoch in range(epochs):
+                optimizer.zero_grad()
 
-        # Training loop
-        for epoch in range(epochs):
-            optimizer.zero_grad()
+                # Forward pass
+                outputs = self(x_tensor)
+                loss = criterion(outputs, y_tensor)
 
-            # Forward pass
-            outputs = self(x_tensor)
-            loss = criterion(outputs, y_tensor)
+                # Compute L1 regularization and add to total loss
+                l1_loss = self.compute_l1_regularization()
+                total_loss = loss + l1_loss
 
-            # Compute L1 regularization and add to total loss
-            l1_loss = self.compute_l1_regularization()
-            total_loss = loss + l1_loss
+                # Backward pass and optimization
+                total_loss.backward()
+                optimizer.step()
 
-            # Backward pass and optimization
-            total_loss.backward()
-            optimizer.step()
+                # Validation loss
+                with torch.no_grad():
+                    val_outputs = self(x_val_tensor)
+                    val_loss = criterion(val_outputs, y_val_tensor).item()
 
-            # Validation loss
-            with torch.no_grad():
-                val_outputs = self(x_val_tensor)
-                val_loss = criterion(val_outputs, y_val_tensor).item()
+                # Print losses
+                if epoch % print_every_x == 0:
+                    print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, "
+                          f"L1 Loss: {l1_loss.item(): .4f}, Val Loss: {val_loss: .4f}")
 
-            # Print losses
-            if epoch % print_every_x == 0:
-                print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, "
-                      f"L1 Loss: {l1_loss.item(): .4f}, Val Loss: {val_loss: .4f}")
-
-            # Check early stopping
-            early_stopping(loss.item())
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
+                # Check early stopping
+                early_stopping(loss.item())
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
 
     def predict(self, x_new: np.array) -> np.array:
         """
@@ -248,12 +138,20 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
         # Convert predictions to numpy array and return
         return predictions.numpy()
 
-    def _optimize_lambda_with_optuna(self, x, y, validation_data, epochs, learning_rate, early_stopping_patience, early_stopping_min_delta, n_trials):
+    def _optimize_lambda_with_optuna(self,
+                                     x,
+                                     y,
+                                     validation_data,
+                                     epochs,
+                                     learning_rate,
+                                     early_stopping_patience,
+                                     early_stopping_min_delta,
+                                     n_trials):
         """
         Use Optuna to find the best value of l1_lambda.
         """
         def objective(trial):
-            lmbda = trial.suggest_loguniform('l1_lambda', 1e-4, 1.0)  # Search in log scale
+            lmbda = trial.suggest_loguniform('l1_lambda', 0.01, 0.99)  # Search in log scale
             self.l1_lambda = lmbda  # Temporarily set the lambda for evaluation
 
             # Prepare data
@@ -264,11 +162,11 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
 
             # Define loss and optimizer
             criterion = nn.MSELoss()
-            optimizer = optim.Adagrad(self.parameters(), lr=learning_rate, weight_decay=self.weight_decay)
+            optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
 
             # Train for a subset of epochs
             early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
-            for epoch in range(epochs // 5):  # Shortened training for lambda optimization
+            for epoch in range(epochs):  # Shortened training for lambda optimization
                 optimizer.zero_grad()
 
                 outputs = self(x_tensor)

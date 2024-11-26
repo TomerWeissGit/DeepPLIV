@@ -49,7 +49,7 @@ class DeepPLIV:
 
     def fit_first_stage(self, v_1: np.array, z_1: np.array,
                          epochs_first_stage: int,
-                         learning_rate_first_stage: float, weight_decay = 0.0 , l1_lambda:float = 0.0,
+                         learning_rate_first_stage: float , l1_lambda:float = 0.0,
                         validation_data: tuple = None) -> NeuralNetworkFirstStageWithL1:
         """
         Fit the DeepPLIV model.
@@ -57,15 +57,12 @@ class DeepPLIV:
         :param z_1: np.array, the instrumental variable.
         :param epochs_first_stage: int, the number of epochs for training the first stage.
         :param learning_rate_first_stage: float, the learning rate for training the first stage.
-        :param weight_decay: float, the weight decay for the first stage model.
         :param l1_lambda: float, the L1 regularization parameter.
         :param validation_data: tuple, the validation data.
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
 
-        self.first_stage_model = NeuralNetworkFirstStageWithL1(input_dim=z_1.shape[1],
-                                                         weight_decay= weight_decay,
-                                                         l1_lambda=l1_lambda)
+        self.first_stage_model = NeuralNetworkFirstStageWithL1(input_dim=z_1.shape[1], l1_lambda=l1_lambda)
         validation_data = validation_data  # Assuming the validation data is the same as the training data
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
                                               validation_data=validation_data)

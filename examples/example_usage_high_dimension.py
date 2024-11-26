@@ -185,11 +185,9 @@ class NaiveSRISPSHighDimension:
     def estimating_sri_sps_with_nn(self,
                                    epochs=2000,
                                    learning_rate = 0.01,
-                                   weight_decay: float = 0.001,
                                    l1_lambda = None):
         """
         Estimate the 2SLS model using a simple neural network model. - SPS
-        :param weight_decay: float, the weight decay for the first stage model.
         :param epochs: int, the number of epochs for training the first stage.
         :param learning_rate: float, the learning rate for training the first stage.
         :return: tuple of np.array, the coefficients of the Naive SR-IV model.
@@ -204,7 +202,6 @@ class NaiveSRISPSHighDimension:
         first_stage_model = model.fit_first_stage(x_first_stage_standardized, vars_first_stage_standardized,
                                                   epochs_first_stage=epochs,
                                                   learning_rate_first_stage=learning_rate,
-                                                  weight_decay= weight_decay,
                                                   l1_lambda = l1_lambda,
                                                   validation_data = (vars_second_stage_standardized,
                                                                      x_second_stage_standardized))
@@ -293,8 +290,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
         # NN model
         coefficients_sri, coefficients_sps, l1_lambda = naive_srisps.estimating_sri_sps_with_nn(learning_rate=learning_rate,
                                                                                      epochs = epochs,
-                                                                                     l1_lambda = l1_lambda ,
-                                                                                     weight_decay=0.001)
+                                                                                     l1_lambda = l1_lambda)
         for i, coef in enumerate(coefficients_sri[0]):
             results['method'].append('SRI with NN')
             results['coefficient'].append(f'coef_{i}')
@@ -313,17 +309,17 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     return results_df
 
 if __name__ == '__main__':
-    lr = 0.0001
-    num_simulations: int = 10
+    lr = 0.001
+    num_simulations: int = 500
     beta_2: float = 1
     beta_1: float = -1
     scenario: int = 2
     n: int = 20000
-    p: int = 400
-    gamma_iv : float = 0.01
+    p: int = 1000
+    gamma_iv : float = 0.05
     gamma_u : float = 1
-    epochs : int = 2000
-    non_null_iv: int = 400
+    epochs : int = 4000
+    non_null_iv: int = 100
     for beta_u_ in [1]:
         for beta_3_ in [0.5]:
             res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
