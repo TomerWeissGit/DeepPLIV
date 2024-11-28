@@ -14,7 +14,8 @@ class DeepPLIV:
             first_stage_epochs: int = 500,
             first_stage_learning_rate: float = 0.01,
             second_stage_epochs: int = 500,
-            second_stage_learning_rate: float = 0.01) -> (NeuralNetworkFirstStageWithL1, NeuralNetworkSecondStage):
+            second_stage_learning_rate: float = 0.01,
+            l1_lambda: float = None) -> (NeuralNetworkFirstStageWithL1, NeuralNetworkSecondStage):
         """
         Fit the DeepPLIV model. The model is trained in two stages:
             - First stage: Train a neural network to predict the endogenous variable.
@@ -28,9 +29,10 @@ class DeepPLIV:
         :param first_stage_learning_rate: the learning rate for training the first stage.
         :param second_stage_epochs: the number of epochs for training the second stage.
         :param second_stage_learning_rate: the learning rate for training the second stage.
+        :param l1_lambda: the L1 regularization parameter.
         :return:
         """
-        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate)
+        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate , l1_lambda=l1_lambda)
         v_hat = self.predict_first_stage(z_2)
         self.fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate)
         return self.first_stage_model, self.second_stage_model
