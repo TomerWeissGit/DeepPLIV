@@ -5,127 +5,91 @@ from sklearn.linear_model import LinearRegression
 from core.trainer import DeepPLIV
 from utils.helpers import plot_boxplot
 from typing import Literal
+from sklearn.preprocessing import StandardScaler
 
 class SimDataCreatorHighDimension:
-    def __init__(self,
-                 n: int,
-                 p: int,
-                 beta_1: float,
-                 beta_2: float,
-                 beta_3: float,
-                 beta_u: float,
-                 gamma_u: float,
-                 non_null_iv: int,
-                 gwas_threshold: float = 5e-8,
-                 scenario: int = 1):
-        """
-        Initialize the SimDataCreatorHighDimension class.
-
-        :param n: int, number of samples.
-        :param p: int, number of features.
-        :param beta_1: float, coefficient for the endogenous variable.
-        :param beta_2: float, coefficient for the exogenous variable.
-        :param beta_3: float, coefficient for the interaction term between the endogenous and exogenous variables.
-        :param beta_u: float, coefficient for the confounding variable.
-        :param gamma_u: float, coefficient for the confounding variable.
-        :param non_null_iv: int, indices of the non-null instrumental variables.
-        """
-        self.n_x_1 = n//2
-        self.n_x_2 = n//2
-        self.n_y = n//2
-        self.std_x = np.sqrt(1/self.n_x_1)
-        # Generate the confounding variable
+    def __init__(self, n, p, beta_1, beta_2, beta_3, beta_u, gamma_u, non_null_iv, gwas_threshold=None, scenario=1):
+        self.n_x_1 = self.n_x_2 = self.n_y = n // 2
         self.u = np.random.normal(0, 1, n)
         self.p = p
-        self.beta_1 = beta_1
-        self.beta_2 = beta_2
-        self.beta_3 = beta_3
-        self.beta_u = beta_u
-        self.gamma_u = gamma_u
+        self.beta_1, self.beta_2, self.beta_3, self.beta_u, self.gamma_u = beta_1, beta_2, beta_3, beta_u, gamma_u
         self.non_null_iv = non_null_iv
-
-        # create the instrumental variables
         self.gamma_iv = np.zeros(p)
-        self.g_iv = np.random.binomial(2, 0.3, size=(n, p))
-        # split for first and second batch
-        self.g_iv_1 = self.g_iv[:self.n_x_1]
-        self.g_iv_2 = self.g_iv[self.n_x_1:]
-        # create the exogenous variable
+        self.g_iv = np.random.binomial(2, 0.3, size=(n, p)) / 2
+        self.g_iv_1, self.g_iv_2 = self.g_iv[:self.n_x_1], self.g_iv[self.n_x_1:]
         self.g = np.random.binomial(2, 0.3, size=self.n_y)
-        self.g = self.g - self.g.mean()
-
-        self.gwas_threshold = gwas_threshold
+        self.gwas_threshold = 5 / np.sqrt(self.n_x_1) if gwas_threshold is None else gwas_threshold
         self._generate_gamma_iv()
         self.x_1, self.x_2 = self._generate_x_df(scenario)
         self.y = self._generate_y_df()
 
     def _generate_gamma_iv(self):
-        random_gammas = np.random.normal(0, self.std_x, 10000000)
-        random_strong_ivs = [np.random.randint(0,
-                                               len(random_gammas[np.abs(random_gammas) > self.gwas_threshold]),
-                                               self.non_null_iv)]
-        random_weak_ivs = [np.random.randint(0,
-                                             len(random_gammas[np.abs(random_gammas) < self.gwas_threshold]),
-                                             len(self.gamma_iv[self.non_null_iv:]))]
-        self.gamma_iv[:self.non_null_iv] = random_gammas[np.abs(random_gammas)>self.gwas_threshold][random_strong_ivs]
-        self.gamma_iv[self.non_null_iv:] = random_gammas[np.abs(random_gammas)<self.gwas_threshold][random_weak_ivs]
+        random_gammas_gt = []
+        random_gammas = []
+        while len(random_gammas_gt) < self.non_null_iv:
+            random_gammas = np.random.normal(0, self.gwas_threshold / 2, 1000000)
+            random_gammas_gt += list(random_gammas[np.abs(random_gammas) > self.gwas_threshold])
+        self.gamma_iv[:self.non_null_iv] = np.random.choice(random_gammas_gt, self.non_null_iv, replace=False)
+        self.gamma_iv[self.non_null_iv:] = np.random.choice(random_gammas[np.abs(random_gammas) < self.gwas_threshold],
+                                                            len(self.gamma_iv[self.non_null_iv:]))
 
     @staticmethod
     def _standardize(x_1, x_2):
-        return x_1 / x_1.std(), x_2 / x_1.std() # dividing by the same std is important
+        scaler = StandardScaler()
+        x_1 = scaler.fit_transform(x_1.reshape(-1, 1)).flatten()
+        x_2 = scaler.transform(x_2.reshape(-1, 1)).flatten()
+        return x_1, x_2
 
-    def _generate_x_df(self, scenario: Literal[1, 2, 3] = 1):
-        """
-        Generate the data for the exogenous variables.
-        :param scenario: int, the scenario to consider.
-        :return: pd.DataFrame, the data for the exogenous variables.
-        """
-        # scenario_1 - linear
+    def _generate_x_df(self, scenario):
+        error_1, error_2 = np.random.normal(0, 1, self.n_x_1), np.random.normal(0, 1, self.n_x_2)
         if scenario == 1:
-            x_1 = self.g_iv_1 @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + np.random.normal(0, 1, self.n_x_1)
-            x_2 = self.g_iv_2 @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + np.random.normal(0, 1, self.n_x_2)
-            return self._standardize(x_1, x_2)
-        # scenario_2 - non-linear 1 - same effect for 1 or 2 snps.
-        if scenario == 2:
-            def _aux_non_linear_1(g_iv, gamma_iv, gamma_u, u, n_x):
-                return (np.abs(g_iv-1.5)*2) @ gamma_iv + gamma_u * u + np.random.normal(0, 1, n_x)
-            x_1 = _aux_non_linear_1(self.g_iv_1, self.gamma_iv, self.gamma_u,
-                                                 self.u[:self.n_x_1], self.n_x_1)
-            x_2 = _aux_non_linear_1(self.g_iv_2, self.gamma_iv, self.gamma_u, self.u[self.n_x_1:],
-                                                 self.n_x_2)
-            return self._standardize(x_1, x_2)
-        # scenario_3 - non-linear 2 - having 2 snps dramatically increase effect, not in a linear way
-        if scenario == 3:
-            def _aux_non_linear_2(g_iv, gamma_iv, gamma_u, u, n_x):
-                return (g_iv**2) @ gamma_iv + gamma_u * u + np.random.normal(0, 1, n_x)
-            x_1 = _aux_non_linear_2(self.g_iv_1, self.gamma_iv, self.gamma_u,
-                                                 self.u[:self.n_x_1], self.n_x_1)
-            x_2 = _aux_non_linear_2(self.g_iv_2, self.gamma_iv, self.gamma_u, self.u[self.n_x_1:],
-                                                 self.n_x_2)
-            return self._standardize(x_1, x_2)
+            x_1 = self.g_iv_1 @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = self.g_iv_2 @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+        elif scenario == 2:
+            x_1 = (np.abs(self.g_iv_1 - 0.75) * 2) @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = (np.abs(self.g_iv_2 - 0.75) * 2) @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+        elif scenario == 3:
+            x_1 = (self.g_iv_1 ** 2) @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = (self.g_iv_2 ** 2) @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+        elif scenario == 4:
+            x_1 = (self.g_iv_1==0.5).astype(float) @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = (self.g_iv_2==0.5).astype(float) @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+        elif scenario == 5:
+            x_1 = (np.exp(self.g_iv_1)).astype(float) @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = (np.exp(self.g_iv_2)).astype(float) @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+        elif scenario == 6:
+            # Initialize x_1 and x_2 as zeros
+            x_1 = np.zeros(self.n_x_1)
+            x_2 = np.zeros(self.n_x_2)
+
+            for _ in range(self.p//10):
+                # Randomly select a pair of IVs for interactions
+                iv_indices_1 = np.random.choice(self.g_iv_1.shape[1], 2, replace=False)
+
+                # Compute interaction terms for each tuple
+                interaction_iv_1 = (self.g_iv_1[:, iv_indices_1[0]] * self.g_iv_1[:, iv_indices_1[1]])
+                interaction_iv_2 = (self.g_iv_2[:, iv_indices_1[0]] * self.g_iv_2[:, iv_indices_1[1]])
+
+                # Add weighted interactions to x_1 and x_2
+                x_1 += interaction_iv_1 * self.gamma_iv[iv_indices_1[1]]  # Adjust weight selection based on gamma_iv
+                x_2 += interaction_iv_2 * self.gamma_iv[iv_indices_1[1]]  # Adjust weight selection based on gamma_iv
+
+            # Add confounding and error terms
+            x_1 += self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 += self.gamma_u * self.u[self.n_x_1:] + error_2
+
+            return x_1, x_2
         else:
             raise ValueError('Scenario not implemented')
-
+        return self._standardize(x_1, x_2)
 
     def _generate_y_df(self):
         y_base = self.beta_2 * self.g + self.beta_u * self.u[self.n_x_1:] + np.random.normal(0, 1, self.n_y)
-
-        def aux_generate_y(x):
-            return self.beta_1 * x + y_base + self.beta_3 * (self.g * x)
-
-        y = aux_generate_y(self.x_2)
-        return y
+        return self.beta_1 * self.x_2 + y_base + self.beta_3 * (self.g * self.x_2)
 
     def get_data(self):
-        """
-        Get the data generated by the class. The data is in the form of a pandas DataFrame. The columns are as follows:
-        - x_df: pd.DataFrame, the exogenous variables.
-        - y: pd.DataFrame, the endogenous variable.
-        - g_iv: the instrumental variables.
-        - g: exogenous variable.
-        :return: tuple of pd.DataFrame, the generated data.(x_df, y, g_iv, g)
-        """
         return self.x_1, self.x_2, self.y, self.g_iv_1, self.g_iv_2, self.g
+
 
 class NaiveSRISPSHighDimension:
     def __init__(self, data_creator: SimDataCreatorHighDimension, epochs: int = 1000, learning_rate: float = 0.01):
@@ -145,7 +109,7 @@ class NaiveSRISPSHighDimension:
         Estimate the Naive SR-IV model using a simple linear regression model.
         :return: np.array, the coefficients of the Naive SR-IV model.
         """
-        x = np.concatenate((self.x_2, self.g.reshape(-1, 1), self.x_2 * self.g.reshape(-1, 1)), axis=1)
+        x = np.concatenate((self.x_2.reshape(-1,1), self.g.reshape(-1, 1), (self.x_2 * self.g).reshape(-1,1)), axis=1)
         model = LinearRegression()
         model.fit(x, self.y)
         return model.coef_
@@ -159,7 +123,10 @@ class NaiveSRISPSHighDimension:
         model = LinearRegression()
         model.fit(self.g_iv_1, self.x_1)
         x_predicted = model.predict(self.g_iv_2)
-        x = np.concatenate((x_predicted, self.g.reshape(-1, 1), x_predicted * self.g.reshape(-1, 1)), axis=1)
+        x = np.concatenate((x_predicted.reshape(-1, 1),
+                            self.g.reshape(-1, 1),
+                            (x_predicted * self.g).reshape(-1, 1)),
+                           axis=1)
         model = LinearRegression()
         model.fit(x, self.y)
         return model.coef_
@@ -174,8 +141,11 @@ class NaiveSRISPSHighDimension:
         x_predicted = model.predict(self.g_iv_2)
         x_error = self.x_2 - x_predicted
 
-
-        x = np.concatenate((self.x_2, self.g.reshape(-1, 1), self.x_2 * self.g.reshape(-1, 1), x_error), axis=1)
+        x = np.concatenate([self.x_2.reshape(-1, 1),
+                           self.g.reshape(-1, 1),
+                           (self.x_2 * self.g).reshape(-1, 1),
+                x_error.reshape(-1, 1)],
+                           axis =1 )
         model = LinearRegression()
         model.fit(x, self.y)
         return model.coef_
@@ -186,17 +156,21 @@ class NaiveSRISPSHighDimension:
         :return: tuple of np.array, the coefficients of the Naive SR-IV model.
         """
         model = DeepPLIV()
-        vars_first_stage_normalized = (self.g_iv_1 - self.g_iv_1.mean(axis=0)) / self.g_iv_1.std(axis=0)
-        vars_second_stage_normalized = (self.g_iv_2 - self.g_iv_2.mean(axis=0)) / self.g_iv_1.std(axis=0)
-        first_stage_model = model.fit_first_stage(self.x_1, vars_first_stage_normalized,
+        # normalize the data
+        scaler = StandardScaler()
+        g_iv_1 = scaler.fit_transform(self.g_iv_1)
+        g_iv_2 = scaler.transform(self.g_iv_2)
+        x_1 = self.x_1.copy()
+        # x_1 += np.random.normal(0, 0.5, x_1.shape)
+        first_stage_model = model.fit_first_stage(x_1, g_iv_1,
                                                   epochs_first_stage=self.epochs,
                                                   learning_rate_first_stage=self.learning_rate,
-                                                  validation_data = (vars_second_stage_normalized, self.x_2))
-        x_predicted = first_stage_model.predict(vars_second_stage_normalized)
-        x_error = self.x_2 - x_predicted
+                                                  validation_data = (g_iv_2, self.x_2))
+        x_predicted = first_stage_model.predict(g_iv_2)
+        x_error = self.x_2.reshape(-1, 1) - x_predicted
 
         # SRI model
-        x_sri = np.concatenate((self.x_2, self.g.reshape(-1, 1), self.x_2 * self.g.reshape(-1, 1), x_error), axis=1)
+        x_sri = np.concatenate((self.x_2.reshape(-1, 1), self.g.reshape(-1, 1), (self.x_2 * self.g).reshape(-1, 1), x_error), axis=1)
         model_sri = LinearRegression()
         model_sri.fit(x_sri, self.y)
 
@@ -219,7 +193,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                                           gamma_u: float = 1.0,
                                           non_null_iv: int = 20,
                                           learning_rate: float = 0.01,
-                                          epochs: int = 2000):
+                                          epochs: int = 2000,
+                                          gwas_threshold: float = None):
     """
     Run the genetic simulation for the high-dimensional case.
      The simulation generates data using the SimDataCreatorHighDimension class
@@ -237,6 +212,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     :param non_null_iv: parameter to control the number of non-null instrumental variables.
     :param learning_rate: parameter to control the learning rate for the neural network model.
     :param epochs: parameter to control the number of epochs for training the neural network model.
+    :param gwas_threshold: parameter to control the threshold for the GWAS.
     :return: pd.DataFrame, the results of the simulation.
     """
     results = {
@@ -245,62 +221,51 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
         'value': []
     }
 
-
     for _ in range(num_simulations):
         data_creator = SimDataCreatorHighDimension(n=n, p=p, beta_1=beta_1, beta_2=beta_2, beta_3=beta_3, beta_u=beta_u,
-                                                   gamma_u=gamma_u, non_null_iv=non_null_iv, scenario=scenario)
+                                                   gamma_u=gamma_u, non_null_iv=non_null_iv, scenario=scenario,
+                                                   gwas_threshold=gwas_threshold)
 
         naive_srisps = NaiveSRISPSHighDimension(data_creator=data_creator, epochs=epochs, learning_rate=learning_rate)
-        coefficients = naive_srisps.estimate_naive_regression()
-        for i, coef in enumerate(coefficients[0]):
-            results['method'].append('Naive Regression')
-            results['coefficient'].append(f'coef_{i}')
-            results['value'].append(coef)
 
-        coefficients = naive_srisps.estimate_sps()
-        for i, coef in enumerate(coefficients[0]):
-            results['method'].append('SPS')
-            results['coefficient'].append(f'coef_{i}')
-            results['value'].append(coef)
+        for method, estimate_func in [('Naive Regression', naive_srisps.estimate_naive_regression),
+                                      ('SPS', naive_srisps.estimate_sps),
+                                      ('SRI', naive_srisps.estimate_sri)]:
+            coefficients = estimate_func()
+            for i, coef in enumerate(coefficients):
+                results['method'].append(method)
+                results['coefficient'].append(f'coef_{i}')
+                results['value'].append(coef)
 
-        coefficients = naive_srisps.estimate_sri()
-        for i, coef in enumerate(coefficients[0]):
-            results['method'].append('SRI')
-            results['coefficient'].append(f'coef_{i}')
-            results['value'].append(coef)
-        # NN model
         coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn()
-        for i, coef in enumerate(coefficients_sri[0]):
-            results['method'].append('SRI with NN')
-            results['coefficient'].append(f'coef_{i}')
-            results['value'].append(coef)
-            if i == 0:
-                print(f'coef_{i} sri: {coef}')
-        for i, coef in enumerate(coefficients_sps[0]):
-            results['method'].append('SPS with NN')
-            results['coefficient'].append(f'coef_{i}')
-            results['value'].append(coef)
-            if i == 0:
-                print(f'coef_{i} sps: {coef}')
+        for method, coefficients in [('SRI with NN', coefficients_sri), ('SPS with NN', coefficients_sps)]:
+            for i, coef in enumerate(coefficients):
+                if np.abs(coef)>10:
+                    print(f'coef_{i} {method.lower()}: {coef}')
+                    break
+                results['method'].append(method)
+                results['coefficient'].append(f'coef_{i}')
+                results['value'].append(coef)
+                if i == 0:
+                    print(f'coef_{i} {method.lower()}: {coef}')
 
     results_df = pd.DataFrame(results)
     results_df.to_pickle(f'high_dim_sim_results_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}.pkl')
     return results_df
 
 if __name__ == '__main__':
-    lr = 0.001
-    num_simulations: int = 1
+    num_simulations: int = 10
     beta_2: float = 1
-    beta_1: float = -1
-    n: int = 20000
-    p: int = 1000
-    gamma_iv : float = 0.05
-    std = gamma_iv/2
+    beta_1: float = 0.5
+    n: int = 5000
+    p: int = 100
+    lr: float = 0.0001 / p
+
     gamma_u : float = 1
-    epochs : int = 1000
-    l1_lambda = 0
-    for scenario in [2]:
-        for non_null_iv in [10, 100, 500, 1000]:
+    epochs : int = 10000
+    gwas_threshold: float = 1
+    for scenario in [6]:
+        for non_null_iv in [10]:
             for beta_u_ in [1]:
                 for beta_3_ in [0.5]:
                     res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
@@ -314,5 +279,8 @@ if __name__ == '__main__':
                                                                 gamma_u=gamma_u,
                                                                 non_null_iv = non_null_iv,
                                                                 learning_rate=lr,
-                                                                epochs = epochs)
+                                                                epochs = epochs,
+                                                                gwas_threshold=gwas_threshold)
+
                     plot_boxplot(res, y_line=beta_1)
+

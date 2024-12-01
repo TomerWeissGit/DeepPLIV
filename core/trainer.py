@@ -64,8 +64,7 @@ class DeepPLIV:
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
 
-        self.first_stage_model = NeuralNetworkFirstStageWithL1(input_dim=z_1.shape[1], l1_lambda=l1_lambda)
-        validation_data = validation_data  # Assuming the validation data is the same as the training data
+        self.first_stage_model = NeuralNetworkFirstStageWithL1(input_dim=z_1.shape[1])
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
                                               validation_data=validation_data)
         return self.first_stage_model
