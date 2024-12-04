@@ -19,11 +19,11 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
         self.linear_relu_stack = nn.Sequential(
             nn.Linear(input_dim, input_dim),
             nn.ReLU(),
+            nn.Dropout(0.6),
             nn.Linear(input_dim, input_dim//4+1),
             nn.ReLU(),
-            nn.Linear(input_dim//4+1, input_dim//8+1),
-            nn.ReLU(),
-            nn.Linear(input_dim//8+1, 1))
+            nn.Dropout(0.5),
+            nn.Linear(input_dim//4+1, 1))
 
 
         # Use the third layer only if the input dimension is greater than 500
@@ -35,15 +35,6 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
         x = self.linear_relu_stack(x)
         return x
 
-    def l1_regularization(self, lambda_l1: float = 0.1) -> torch.Tensor:
-        """
-        Compute the L1 regularization term.
-        """
-        l1_reg = torch.tensor(0.0, requires_grad=True)
-        for name, param in self.named_parameters():
-            if 'weight' in name:
-                l1_reg = l1_reg + torch.norm(param, 1)
-        return lambda_l1 * l1_reg
 
     @spinner_decorator("Training first stage")
     def train_new_data(self, x: np.array,
@@ -51,15 +42,14 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        validation_data: tuple = None,
-                       early_stopping_patience: int = 5,
+                       early_stopping_patience: int = 2,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 100,
-                       batch_size: int = 100,
-                       num_workers: int = 1) -> None:
+                       print_every_x: int = 10,
+                       batch_size: int = None) -> None:
         """
         Train the neural network model.
         """
-
+        batch_size = batch_size if batch_size else x.shape[0]//1000
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)

@@ -58,25 +58,10 @@ class SimDataCreatorHighDimension:
             x_1 = (np.exp(self.g_iv_1)).astype(float) @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
             x_2 = (np.exp(self.g_iv_2)).astype(float) @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
         elif scenario == 6:
+            x_1 = self.g_iv_1[:, 0] * self.g_iv_1[:, 1] + self.g_iv_1[:, 2] * self.g_iv_1[:, 3] + self.g_iv_1 @ self.gamma_iv + self.gamma_u * self.u[:self.n_x_1] + error_1
+            x_2 = self.g_iv_2[:, 0] * self.g_iv_2[:, 1] + self.g_iv_1[:, 2] * self.g_iv_1[:, 3] + self.g_iv_2 @ self.gamma_iv + self.gamma_u * self.u[self.n_x_1:] + error_2
+
             # Initialize x_1 and x_2 as zeros
-            x_1 = np.zeros(self.n_x_1)
-            x_2 = np.zeros(self.n_x_2)
-
-            for _ in range(self.p//10):
-                # Randomly select a pair of IVs for interactions
-                iv_indices_1 = np.random.choice(self.g_iv_1.shape[1], 2, replace=False)
-
-                # Compute interaction terms for each tuple
-                interaction_iv_1 = (self.g_iv_1[:, iv_indices_1[0]] * self.g_iv_1[:, iv_indices_1[1]])
-                interaction_iv_2 = (self.g_iv_2[:, iv_indices_1[0]] * self.g_iv_2[:, iv_indices_1[1]])
-
-                # Add weighted interactions to x_1 and x_2
-                x_1 += interaction_iv_1 * self.gamma_iv[iv_indices_1[1]]  # Adjust weight selection based on gamma_iv
-                x_2 += interaction_iv_2 * self.gamma_iv[iv_indices_1[1]]  # Adjust weight selection based on gamma_iv
-
-            # Add confounding and error terms
-            x_1 += self.gamma_u * self.u[:self.n_x_1] + error_1
-            x_2 += self.gamma_u * self.u[self.n_x_1:] + error_2
 
             return x_1, x_2
         else:
@@ -161,7 +146,7 @@ class NaiveSRISPSHighDimension:
         g_iv_1 = scaler.fit_transform(self.g_iv_1)
         g_iv_2 = scaler.transform(self.g_iv_2)
         x_1 = self.x_1.copy()
-        # x_1 += np.random.normal(0, 0.5, x_1.shape)
+
         first_stage_model = model.fit_first_stage(x_1, g_iv_1,
                                                   epochs_first_stage=self.epochs,
                                                   learning_rate_first_stage=self.learning_rate,
@@ -250,22 +235,23 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     print(f'coef_{i} {method.lower()}: {coef}')
 
     results_df = pd.DataFrame(results)
-    results_df.to_pickle(f'high_dim_sim_results_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}.pkl')
+    results_df.to_pickle(f'high_dim_sim_results_high_dropout_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}.pkl')
     return results_df
 
 if __name__ == '__main__':
     num_simulations: int = 10
     beta_2: float = 1
     beta_1: float = 0.5
-    n: int = 5000
-    p: int = 100
-    lr: float = 0.0001 / p
-
+    n: int =  20000
+    p: int = 500
+    # lr: float = n * 5e-8 / p
+    lr: float = 0.001
     gamma_u : float = 1
-    epochs : int = 10000
-    gwas_threshold: float = 1
-    for scenario in [6]:
+    epochs : int = 100
+    gwas_threshold: float = 0.05
+    for scenario in [1]:
         for non_null_iv in [10]:
+            print(scenario, non_null_iv)
             for beta_u_ in [1]:
                 for beta_3_ in [0.5]:
                     res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
