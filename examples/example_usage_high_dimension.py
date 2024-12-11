@@ -179,7 +179,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                                           non_null_iv: int = 20,
                                           learning_rate: float = 0.01,
                                           epochs: int = 2000,
-                                          gwas_threshold: float = None):
+                                          gwas_threshold: float = None,
+                                          k: int = 5):
     """
     Run the genetic simulation for the high-dimensional case.
      The simulation generates data using the SimDataCreatorHighDimension class
@@ -221,9 +222,25 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                 results['method'].append(method)
                 results['coefficient'].append(f'coef_{i}')
                 results['value'].append(coef)
-
-        coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn()
+        coefficients_sri_lst, coefficients_sps_lst = [], []
+        for i in range(k):
+            coefficients_sri, coefficients_sps = naive_srisps.estimating_sri_sps_with_nn()
+            coefficients_sri_lst.append(coefficients_sri)
+            coefficients_sps_lst.append(coefficients_sps)
+        coefficients_sri_mean = np.mean(coefficients_sri_lst, axis=0)
+        coefficients_sps_mean = np.mean(coefficients_sps_lst, axis=0)
         for method, coefficients in [('SRI with NN', coefficients_sri), ('SPS with NN', coefficients_sps)]:
+            for i, coef in enumerate(coefficients):
+                if np.abs(coef)>10:
+                    print(f'coef_{i} {method.lower()}: {coef}')
+                    break
+                results['method'].append(method)
+                results['coefficient'].append(f'coef_{i}')
+                results['value'].append(coef)
+                if i == 0:
+                    print(f'coef_{i} {method.lower()}: {coef}')
+        for method, coefficients in [(f'SRI with NN - mean {k}', coefficients_sri_mean),
+                                     (f'SPS with NN - mean {k}', coefficients_sps_mean)]:
             for i, coef in enumerate(coefficients):
                 if np.abs(coef)>10:
                     print(f'coef_{i} {method.lower()}: {coef}')
@@ -235,38 +252,41 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     print(f'coef_{i} {method.lower()}: {coef}')
 
     results_df = pd.DataFrame(results)
-    results_df.to_pickle(f'high_dim_sim_results_high_dropout_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}.pkl')
+    results_df.to_pickle(f'high_dim_sim_results_high_dropout_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}_with_{k}_trainings.pkl')
     return results_df
 
 if __name__ == '__main__':
-    num_simulations: int = 10
-    beta_2: float = 1
-    beta_1: float = 0.5
-    n: int =  20000
-    p: int = 500
-    # lr: float = n * 5e-8 / p
-    lr: float = 0.001
-    gamma_u : float = 1
-    epochs : int = 100
-    gwas_threshold: float = 0.05
-    for scenario in [1]:
-        for non_null_iv in [10]:
-            print(scenario, non_null_iv)
-            for beta_u_ in [1]:
-                for beta_3_ in [0.5]:
-                    res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
-                                                                beta_u=beta_u_,
-                                                                beta_3=beta_3_,
-                                                                scenario=scenario,
-                                                                p=p,
-                                                                n=n,
-                                                                beta_1=beta_1,
-                                                                beta_2=beta_2,
-                                                                gamma_u=gamma_u,
-                                                                non_null_iv = non_null_iv,
-                                                                learning_rate=lr,
-                                                                epochs = epochs,
-                                                                gwas_threshold=gwas_threshold)
-
-                    plot_boxplot(res, y_line=beta_1)
+    #  This is the simulation for the first only the first part being non-linear
+    # num_simulations: int = 300
+    # beta_2: float = 1
+    # beta_1: float = 0.5
+    # n: int =  20000
+    # p: int = 500
+    # k: int = 10
+    # # lr: float = n * 5e-8 / p
+    # lr: float = 0.001
+    # gamma_u : float = 1
+    # epochs : int = 100
+    # gwas_threshold: float = 0.05
+    # for scenario in [2]:
+    #     for non_null_iv in [10, 100, 200, 500]:
+    #         print(scenario, non_null_iv)
+    #         for beta_u_ in [1]:
+    #             for beta_3_ in [0.5]:
+    #                 res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
+    #                                                             beta_u=beta_u_,
+    #                                                             beta_3=beta_3_,
+    #                                                             scenario=scenario,
+    #                                                             p=p,
+    #                                                             n=n,
+    #                                                             beta_1=beta_1,
+    #                                                             beta_2=beta_2,
+    #                                                             gamma_u=gamma_u,
+    #                                                             non_null_iv = non_null_iv,
+    #                                                             learning_rate=lr,
+    #                                                             epochs = epochs,
+    #                                                             gwas_threshold=gwas_threshold,
+    #                                                             k = k)
+    #
+    #                 # plot_boxplot(res, y_line=beta_1)
 
