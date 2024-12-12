@@ -8,7 +8,33 @@ from typing import Literal
 from sklearn.preprocessing import StandardScaler
 
 class SimDataCreatorHighDimension:
-    def __init__(self, n, p, beta_1, beta_2, beta_3, beta_u, gamma_u, non_null_iv, gwas_threshold=None, scenario=1):
+    def __init__(self,
+                 n: int,
+                 p: int,
+                 beta_1: float,
+                 beta_2: float,
+                 beta_3: float,
+                 beta_u: float,
+                 gamma_u: float,
+                 non_null_iv: int,
+                 gwas_threshold: float = None,
+                 scenario: int = 1,
+                 only_first_stage: bool = True):
+        """
+        Initialize the SimDataCreatorHighDimension class.
+
+        :param n: int, number of samples.
+        :param p: int, number of features.
+        :param beta_1: float, coefficient for the endogenous variable.
+        :param beta_2: float, coefficient for the exogenous variable.
+        :param beta_3: float, coefficient for the interaction term between the endogenous and exogenous variables.
+        :param beta_u: float, coefficient for the confounding variable.
+        :param gamma_u: float, coefficient for the confounding variable in the first stage.
+        :param non_null_iv: int, number of non-null instrumental variables.
+        :param gwas_threshold: float, threshold for the GWAS.
+        :param scenario: int, scenario to consider.
+        :param only_first_stage: bool, whether to generate only the first stage data.
+        """
         self.n_x_1 = self.n_x_2 = self.n_y = n // 2
         self.u = np.random.normal(0, 1, n)
         self.p = p
@@ -17,11 +43,10 @@ class SimDataCreatorHighDimension:
         self.gamma_iv = np.zeros(p)
         self.g_iv = np.random.binomial(2, 0.3, size=(n, p)) / 2
         self.g_iv_1, self.g_iv_2 = self.g_iv[:self.n_x_1], self.g_iv[self.n_x_1:]
-        self.g = np.random.binomial(2, 0.3, size=self.n_y)
         self.gwas_threshold = 5 / np.sqrt(self.n_x_1) if gwas_threshold is None else gwas_threshold
         self._generate_gamma_iv()
         self.x_1, self.x_2 = self._generate_x_df(scenario)
-        self.y = self._generate_y_df()
+        self.y = self._generate_y_df_linear() if only_first_stage else self._generate_y_df_non_linear(scenario)
 
     def _generate_gamma_iv(self):
         random_gammas_gt = []
@@ -68,9 +93,26 @@ class SimDataCreatorHighDimension:
             raise ValueError('Scenario not implemented')
         return self._standardize(x_1, x_2)
 
-    def _generate_y_df(self):
+    def _generate_y_df_linear(self):
+        self.g = np.random.binomial(2, 0.3, size=self.n_y)
         y_base = self.beta_2 * self.g + self.beta_u * self.u[self.n_x_1:] + np.random.normal(0, 1, self.n_y)
         return self.beta_1 * self.x_2 + y_base + self.beta_3 * (self.g * self.x_2)
+
+    def _generate_y_df_non_linear(self, scenario):
+        self.g = np.random.binomial(2, 0.3, size=(self.n_y, self.p))
+        beta_g = np.random.normal(0, 1, self.p)
+        y_base = self.beta_u * self.u[self.n_x_1:] + np.random.normal(0, 1, self.n_y)
+        if scenario == 1:
+            return self.beta_1 * self.x_2 + self.g @ beta_g + y_base
+        elif scenario == 2:
+            return self.beta_1 * self.x_2 + ((self.g>0).astype(int) @ beta_g) + y_base
+        elif scenario == 3:
+            return self.beta_1 * self.x_2 + (self.g**2) @ beta_g + y_base
+        elif scenario == 4:
+            return self.beta_1 * self.x_2 + (np.exp(self.g)) @ beta_g + y_base
+        elif scenario == 5:
+            return (self.beta_1 * self.x_2 + (self.g[:, 0] * self.g[:, 1] + self.g[:, 2] * self.g[:, 3])
+                    + self.g @ beta_g + y_base)
 
     def get_data(self):
         return self.x_1, self.x_2, self.y, self.g_iv_1, self.g_iv_2, self.g
@@ -94,7 +136,10 @@ class NaiveSRISPSHighDimension:
         Estimate the Naive SR-IV model using a simple linear regression model.
         :return: np.array, the coefficients of the Naive SR-IV model.
         """
-        x = np.concatenate((self.x_2.reshape(-1,1), self.g.reshape(-1, 1), (self.x_2 * self.g).reshape(-1,1)), axis=1)
+        if self.g.shape[1] > 1:
+            x = np.concatenate((self.x_2.reshape(-1, 1), self.g, (self.g * self.x_2[:, None])), axis=1)
+        else:
+            x = np.concatenate((self.x_2.reshape(-1,1), self.g.reshape(-1, 1), (self.x_2 * self.g).reshape(-1,1)), axis=1)
         model = LinearRegression()
         model.fit(x, self.y)
         return model.coef_
@@ -180,7 +225,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                                           learning_rate: float = 0.01,
                                           epochs: int = 2000,
                                           gwas_threshold: float = None,
-                                          k: int = 5):
+                                          k: int = 5,
+                                          linear_second_stage: bool = True):
     """
     Run the genetic simulation for the high-dimensional case.
      The simulation generates data using the SimDataCreatorHighDimension class
@@ -199,6 +245,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     :param learning_rate: parameter to control the learning rate for the neural network model.
     :param epochs: parameter to control the number of epochs for training the neural network model.
     :param gwas_threshold: parameter to control the threshold for the GWAS.
+    :param k: parameter to control the number of trainings for the neural network model.
+    :param linear_second_stage: parameter to control whether to generate only the first part as non-linear.
     :return: pd.DataFrame, the results of the simulation.
     """
     results = {
@@ -210,7 +258,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     for _ in range(num_simulations):
         data_creator = SimDataCreatorHighDimension(n=n, p=p, beta_1=beta_1, beta_2=beta_2, beta_3=beta_3, beta_u=beta_u,
                                                    gamma_u=gamma_u, non_null_iv=non_null_iv, scenario=scenario,
-                                                   gwas_threshold=gwas_threshold)
+                                                   gwas_threshold=gwas_threshold, only_first_stage=linear_second_stage)
 
         naive_srisps = NaiveSRISPSHighDimension(data_creator=data_creator, epochs=epochs, learning_rate=learning_rate)
 
@@ -252,41 +300,45 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     print(f'coef_{i} {method.lower()}: {coef}')
 
     results_df = pd.DataFrame(results)
-    results_df.to_pickle(f'high_dim_sim_results_high_dropout_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}_with_{k}_trainings.pkl')
+    # results_df.to_pickle(f'high_dim_sim_results_high_dropout_{num_simulations}_{beta_u}_{beta_3}_{scenario}_{non_null_iv}_with_{k}_trainings.pkl')
     return results_df
 
+
+
 if __name__ == '__main__':
-    #  This is the simulation for the first only the first part being non-linear
-    # num_simulations: int = 300
-    # beta_2: float = 1
-    # beta_1: float = 0.5
-    # n: int =  20000
-    # p: int = 500
-    # k: int = 10
-    # # lr: float = n * 5e-8 / p
-    # lr: float = 0.001
-    # gamma_u : float = 1
-    # epochs : int = 100
-    # gwas_threshold: float = 0.05
-    # for scenario in [2]:
-    #     for non_null_iv in [10, 100, 200, 500]:
-    #         print(scenario, non_null_iv)
-    #         for beta_u_ in [1]:
-    #             for beta_3_ in [0.5]:
-    #                 res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
-    #                                                             beta_u=beta_u_,
-    #                                                             beta_3=beta_3_,
-    #                                                             scenario=scenario,
-    #                                                             p=p,
-    #                                                             n=n,
-    #                                                             beta_1=beta_1,
-    #                                                             beta_2=beta_2,
-    #                                                             gamma_u=gamma_u,
-    #                                                             non_null_iv = non_null_iv,
-    #                                                             learning_rate=lr,
-    #                                                             epochs = epochs,
-    #                                                             gwas_threshold=gwas_threshold,
-    #                                                             k = k)
-    #
+    num_simulations: int = 300
+    # This is the simulation for the first only the first part being non-linear
+    beta_2: float = 1
+    beta_1: float = 0.5
+    n: int =  20000
+    p: int = 50
+    k: int = 10
+    # lr: float = n * 5e-8 / p
+    lr: float = 0.001
+    gamma_u : float = 1
+    epochs : int = 100
+    gwas_threshold: float = 0.05
+    for scenario in [2]:
+        for non_null_iv in [10, 100, 200, 500]:
+            print(scenario, non_null_iv)
+            for beta_u_ in [1]:
+                for beta_3_ in [0.5]:
+                    res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
+                                                                beta_u=beta_u_,
+                                                                beta_3=beta_3_,
+                                                                scenario=scenario,
+                                                                p=p,
+                                                                n=n,
+                                                                beta_1=beta_1,
+                                                                beta_2=beta_2,
+                                                                gamma_u=gamma_u,
+                                                                non_null_iv = non_null_iv,
+                                                                learning_rate=lr,
+                                                                epochs = epochs,
+                                                                gwas_threshold=gwas_threshold,
+                                                                k = k,
+                                                                linear_second_stage=False)
+
     #                 # plot_boxplot(res, y_line=beta_1)
+
 
