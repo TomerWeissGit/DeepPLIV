@@ -7,23 +7,27 @@ from utils.helpers import EarlyStopping, spinner_decorator
 import torch.optim as optim
 
 
-class NeuralNetworkFirstStageWithL1(nn.Module):
-    def __init__(self, input_dim: int):
+class NeuralNetworkFirstStage(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int = 1, dropout: float = 0.6):
         """
         :param input_dim: int, number of input features.
         """
-        super(NeuralNetworkFirstStageWithL1, self).__init__()
+        super(NeuralNetworkFirstStage, self).__init__()
         self.input_dim = input_dim
         # Define layers
 
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
+            nn.Linear(input_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.6),
-            nn.Linear(input_dim, input_dim//4+1),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(input_dim//4+1, 1))
+            nn.Dropout(dropout),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, output_dim))
+
 
 
         # Use the third layer only if the input dimension is greater than 500
@@ -42,14 +46,14 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        validation_data: tuple = None,
-                       early_stopping_patience: int = 2,
+                       early_stopping_patience: int = 10,
                        early_stopping_min_delta: float = 0.0,
                        print_every_x: int = 10,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.
         """
-        batch_size = batch_size if batch_size else x.shape[0]//1000
+        batch_size = batch_size if batch_size else 100
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
@@ -58,7 +62,7 @@ class NeuralNetworkFirstStageWithL1(nn.Module):
 
         # Define the loss function and the optimizer
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate, weight_decay=0.001, betas=(0.9, 0.999), eps=1e-08)
 
         # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)

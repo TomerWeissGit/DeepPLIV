@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from torch.utils.data import TensorDataset, DataLoader
+
 from utils.helpers import EarlyStopping, spinner_decorator
 
 
@@ -10,7 +12,7 @@ class NeuralNetworkSecondStage(nn.Module):
     A neural network model for the second stage of the DeepPLIV model.
     """
 
-    def __init__(self, x, v):
+    def __init__(self, x, v, dropout: float):
         """
         Initialize the neural network model.
         :param x: int, the dimension of the first input.
@@ -20,25 +22,24 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # First network (deep neural network) for the first input
         self.deep_net = nn.Sequential(
-            nn.Linear(x, 128),
+            nn.Linear(x, 64),
             nn.ReLU(),
-            nn.Linear(128, 32),
+            nn.Dropout(dropout),
+            nn.Linear(64, 32),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(32, 8),
-            nn.ReLU(),
-            nn.Linear(8, 1)
-
         )
 
         # Final layer to combine both v and x
-        self.final_layer = nn.Linear(1 + v, 1)  # 8 from deep branch and 1 from linear resulting in size 9
+        self.final_layer = nn.Linear(v + 8, 1)  # 8 from deep branch and 1 from linear resulting in size 9
 
     def forward(self, x, v):
         # Pass the first input through the deep neural network
         x1 = self.deep_net(x)
 
         # Concatenate the output of deep_net with the raw input2
-        x = torch.cat((x1, v), dim=1)
+        x = torch.cat((v, x1), dim=1)
 
         # Pass the concatenated result through the final layer
         output = self.final_layer(x)
@@ -52,8 +53,9 @@ class NeuralNetworkSecondStage(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        early_stopping_min_delta: float = 0.0,
-                       early_stopping_patience: int = 100,
-                       print_every_x: int = 10000) -> None:
+                       early_stopping_patience: int = 500,
+                       print_every_x: int = 10,
+                       batch_size: int = None) -> None:
         """
         Train the neural network model.
         :param x_exog: np.array, the input exogenous data.
@@ -64,7 +66,14 @@ class NeuralNetworkSecondStage(nn.Module):
         :param early_stopping_min_delta: float, minimum change in the monitored quantity to qualify as an improvement.
         :param early_stopping_patience: int, how many epochs to wait before stopping when loss is not improving.
         :param print_every_x: int, print the loss every x epochs.
+        :param batch_size: int, the batch size for training.
         """
+        # batch size setting
+        if not batch_size:
+            batch_size = 128 if y.shape[0] < 10000 else 256
+        batch_size = batch_size if batch_size else 100
+        early_stopping_patience = early_stopping_patience if early_stopping_patience else int(np.sqrt(epochs))
+
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x_exog, dtype=torch.float32)
         v_tensor = torch.tensor(v_linear, dtype=torch.float32)
@@ -76,20 +85,23 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
+        dataset = TensorDataset(x_tensor, v_tensor, y_tensor)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 
         # Training loop
         counter = 0
+        self.train()  # Set the model to training mode
         for epoch in range(epochs):
-            self.train()  # Set the model to training mode
+            for x_batch, v_batch, y_batch in dataloader:
 
-            # Forward pass
-            outputs = self(x_tensor, v_tensor)
-            loss = criterion(outputs, y_tensor)
+                # Forward pass
+                outputs = self(x_batch, v_batch)
+                loss = criterion(outputs, y_batch)
 
-            # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Backward pass and optimization
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
             # Print the loss for every epoch
             if counter % print_every_x == 0:

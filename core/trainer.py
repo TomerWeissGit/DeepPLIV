@@ -1,21 +1,22 @@
 import numpy as np
 
-from models.first_stage import NeuralNetworkFirstStageWithL1
+from models.first_stage import NeuralNetworkFirstStage
 from models.second_stage import NeuralNetworkSecondStage
-
+from models.first_stage_mdn import NeuralNetworkFirstStageMDN
 
 class DeepPLIV:
     def __init__(self):
-        self.first_stage_model: NeuralNetworkFirstStageWithL1 = None
+        self.first_stage_model: NeuralNetworkFirstStage = None
         self.second_stage_model: NeuralNetworkSecondStage = None
+        self.first_stage_model_mdn: NeuralNetworkFirstStageMDN = None
         pass
 
     def fit(self, v_1: np.array, z_1: np.array,z_2: np.array, x: np.array, y: np.array,
             first_stage_epochs: int = 500,
             first_stage_learning_rate: float = 0.01,
+            dropout: float = 0.6,
             second_stage_epochs: int = 500,
-            second_stage_learning_rate: float = 0.01,
-            l1_lambda: float = None) -> (NeuralNetworkFirstStageWithL1, NeuralNetworkSecondStage):
+            second_stage_learning_rate: float = 0.01) -> (NeuralNetworkFirstStage, NeuralNetworkSecondStage):
         """
         Fit the DeepPLIV model. The model is trained in two stages:
             - First stage: Train a neural network to predict the endogenous variable.
@@ -27,14 +28,14 @@ class DeepPLIV:
         :param y: the outcome variable.
         :param first_stage_epochs: the number of epochs for training the first stage.
         :param first_stage_learning_rate: the learning rate for training the first stage.
+        :param dropout: the dropout rate for the first stage.
         :param second_stage_epochs: the number of epochs for training the second stage.
         :param second_stage_learning_rate: the learning rate for training the second stage.
-        :param l1_lambda: the L1 regularization parameter.
         :return:
         """
-        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate , l1_lambda=l1_lambda)
+        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate, dropout=dropout)
         v_hat = self.predict_first_stage(z_2)
-        self.fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate)
+        self.fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate, dropout=dropout)
         return self.first_stage_model, self.second_stage_model
 
     def predict(self,
@@ -50,9 +51,11 @@ class DeepPLIV:
         return self.predict_second_stage(v_hat, x)
 
     def fit_first_stage(self, v_1: np.array, z_1: np.array,
-                         epochs_first_stage: int,
-                         learning_rate_first_stage: float , l1_lambda:float = 0.0,
-                        validation_data: tuple = None) -> NeuralNetworkFirstStageWithL1:
+                        epochs_first_stage: int,
+                        learning_rate_first_stage: float ,
+                        dropout: float = 0,
+                        validation_data: tuple = None,
+                        output_dim = 1) -> NeuralNetworkFirstStage:
         """
         Fit the DeepPLIV model.
         :param v_1: np.array, the dependent variable.
@@ -64,23 +67,49 @@ class DeepPLIV:
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
 
-        self.first_stage_model = NeuralNetworkFirstStageWithL1(input_dim=z_1.shape[1])
+        self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1], output_dim=output_dim,
+                                                         dropout=dropout)
+        self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
+                                              validation_data=validation_data)
+        return self.first_stage_model
+    def fit_first_stage_mdn(self, v_1: np.array, z_1: np.array,
+                            epochs_first_stage: int,
+                            learning_rate_first_stage: float ,
+                            dropout: float = 0,
+                            validation_data: tuple = None,
+                            output_dim = 1) -> NeuralNetworkFirstStage:
+        """
+        Fit the DeepPLIV model.
+        :param v_1: np.array, the dependent variable.
+        :param z_1: np.array, the instrumental variable.
+        :param epochs_first_stage: int, the number of epochs for training the first stage.
+        :param learning_rate_first_stage: float, the learning rate for training the first stage.
+        :param dropout: float, the dropout rate for the first stage.
+        :param validation_data: tuple, the validation data.
+        :param output_dim: int, the output dimension of the first stage model.
+        :return: NeuralNetworkFirstStage, the trained first stage model.
+        """
+
+        self.first_stage_model = NeuralNetworkFirstStageMDN(input_dim=z_1.shape[1], output_dim=output_dim,
+                                                            dropout=dropout)
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
                                               validation_data=validation_data)
         return self.first_stage_model
 
     def fit_second_stage(self, v_hat: np.array, x: np.array, y: np.array,
-                          epochs_second_stage: int,
-                          learning_rate_second_stage: float) -> NeuralNetworkSecondStage:
+                         epochs_second_stage: int,
+                         learning_rate_second_stage: float,
+                         dropout: float) -> NeuralNetworkSecondStage:
         """
         Fit the second stage of the DeepPLIV model.
         :param v_hat: np.array, the dependent variable prediction.
         :param x: np.array, the exogenous variable.
         :param y: np.array, the outcome variable.
+        :param dropout: float, the dropout rate for the second stage.
         :param epochs_second_stage: int, the number of epochs for training the second stage.
         :param learning_rate_second_stage: float, the learning rate for training the second stage.
         """
-        self.second_stage_model = NeuralNetworkSecondStage(x=x.shape[1], v=v_hat.shape[1])
+        self.second_stage_model = NeuralNetworkSecondStage(x=x.shape[1], v=v_hat.shape[1], dropout=dropout)
         self.second_stage_model.train_new_data(x_exog=x,
                                                v_linear=v_hat,
                                                y=y,
