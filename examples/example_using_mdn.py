@@ -149,41 +149,43 @@ class NaiveSRISPSHighDimension:
         x_error = self.x_2 - x_predicted
         x_predicted = x_predicted
         scaler = StandardScaler()
-        x_exog = scaler.fit_transform(np.concatenate((self.s.reshape(-1, 1),
+        x_exog = np.concatenate((self.s.reshape(-1, 1),
                                                       self.t_2.reshape(-1, 1),
-                                                      (self.x_2 * self.t_2 * self.s).reshape(-1, 1),
-                                                      x_error.reshape(-1, 1)), axis=1))
+                                                      x_error.reshape(-1, 1)), axis=1)
         # SRI model
         model_sri = model.fit_second_stage(self.x_2.reshape(-1, 1),
                                            x_exog,
                                            self.y.reshape(-1, 1),
                                            epochs_second_stage=self.epochs,
-                                           learning_rate_second_stage=self.learning_rate / 10,
+                                           learning_rate_second_stage=self.learning_rate,
                                            dropout=self.dropout)
 
         mode_sri_coef = model_sri.final_layer.weight.detach().numpy()[:, 0]
 
 
         # SPS model
-        # x_sps = np.concatenate((x_predicted.reshape(-1, 1),
-        #                         self.t_2.reshape(-1, 1),
-        #                         self.s.reshape(-1, 1),
-        #                         (x_predicted * self.t_2 * self.s).reshape(-1, 1)), axis=1)
-        # model_sps = LinearRegression()
-        # model_sps.fit(x_sps, self.y)
         scaler = StandardScaler()
         x_exog = scaler.fit_transform(np.concatenate((self.s.reshape(-1, 1),
-                                                      self.t_2.reshape(-1, 1),
-                                                      (x_predicted * self.t_2 * self.s).reshape(-1, 1)), axis=1))
+                                                      self.t_2.reshape(-1, 1)), axis=1))
 
         model_sps = model.fit_second_stage(x_predicted.reshape(-1, 1),
                                           x_exog,
                                           self.y.reshape(-1, 1),
                                           epochs_second_stage=self.epochs,
-                                          learning_rate_second_stage=self.learning_rate / 10,
+                                          learning_rate_second_stage=self.learning_rate,
                                           dropout = self.dropout)
+
         model_sps_coef = model_sps.final_layer.weight.detach().numpy()[:, 0]
-        return model_sps_coef, mode_sri_coef
+        # naive feed forward model
+        model_nff = model.fit_second_stage(self.x_2.reshape(-1, 1),
+                                             x_exog,
+                                             self.y.reshape(-1, 1),
+                                             epochs_second_stage=self.epochs,
+                                             learning_rate_second_stage=self.learning_rate,
+                                             dropout=self.dropout)
+        model_nff_coef = model_nff.final_layer.weight.detach().numpy()[:, 0]
+
+        return model_sps_coef, mode_sri_coef, model_nff_coef
 
 
 def run_high_dimension_genetic_simulation(num_simulations=10,
@@ -232,14 +234,19 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     results['method'].append(method)
                     results['coefficient'].append(f'coef_{i}')
                     results['value'].append(coef)
-        coefficients_sri_lst, coefficients_sps_lst = [], []
+        coefficients_sri_lst, coefficients_sps_lst, coefficients_nff_lst = [], [], []
         for i in range(k):
-            coefficients_sps, coefficients_sri = naive_srisps.estimating_sri_sps_with_nn()
+            coefficients_sps, coefficients_sri, coefficients_nff = naive_srisps.estimating_sri_sps_with_nn()
             coefficients_sri_lst.append(coefficients_sri)
             coefficients_sps_lst.append(coefficients_sps)
+            coefficients_nff_lst.append(coefficients_nff)
         coefficients_sri_mean = np.mean(coefficients_sri_lst, axis=0)
         coefficients_sps_mean = np.mean(coefficients_sps_lst, axis=0)
-        for method, coefficients in [('SPS with NN', coefficients_sps), ('SRI with NN', coefficients_sri)]:
+        coefficients_nff_mean = np.mean(coefficients_nff_lst, axis=0)
+
+        for method, coefficients in [('SPS with NN', coefficients_sps),
+                                     ('SRI with NN', coefficients_sri),
+                                     ('Naive Feed Forward', coefficients_nff)]:
             for i, coef in enumerate(coefficients):
                 if i == 0:
                     if np.abs(coef)>10:
@@ -250,7 +257,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     results['value'].append(coef)
                     print(f'coef_{i} {method.lower()}: {coef}')
         for method, coefficients in [(f'SPS with NN - mean {k}', coefficients_sps_mean),
-                                     (f'SRI with NN - mean {k}', coefficients_sri_mean)]:
+                                     (f'SRI with NN - mean {k}', coefficients_sri_mean),
+                                     (f'Naive Feed Forward - mean {k}', coefficients_nff_mean)]:
             for i, coef in enumerate(coefficients):
                 if i == 0:
                     if np.abs(coef)>10:
@@ -268,15 +276,15 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
 
 
 if __name__ == '__main__':
-    num_simulations: int = 5
+    num_simulations: int = 50
     # This is the simulation for the first only the first part being non-linear
     beta_1: float = -2
     k: int = 1
     lr: float = 0.001
-    for n in [100000]:
-        for rho in [0.9]:
+    for n in [2000, 10000, 20000, 40000]:
+        for rho in [0.5]:
             dropout: float = 1000 / (1000 + n//2)
-            epochs: int = int((3 * 10 ** 6) / (n//2))
+            epochs: int = int((1.5 * 10 ** 7) / (n//2))
             print(f'n: {n}, dropout: {dropout}, rho: {rho},')
             res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
                                                         n=n,
@@ -287,7 +295,7 @@ if __name__ == '__main__':
                                                         k = k,
                                                         dropout=dropout)
             # res = pd.read_pickle(f'deep_iv_sim/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
-            plot_boxplot(res, y_line=beta_1)
+            # plot_boxplot(res, y_line=beta_1)
 
 
 

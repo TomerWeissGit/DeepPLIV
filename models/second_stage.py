@@ -22,17 +22,19 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # First network (deep neural network) for the first input
         self.deep_net = nn.Sequential(
-            nn.Linear(x, 64),
+            nn.Linear(x, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 8),
         )
 
         # Final layer to combine both v and x
-        self.final_layer = nn.Linear(v + 8, 1)  # 8 from deep branch and 1 from linear resulting in size 9
+        self.final_layer = nn.Linear(v + 32, 1)  # 8 from deep branch and 1 from linear resulting in size 9
 
     def forward(self, x, v):
         # Pass the first input through the deep neural network
@@ -53,8 +55,8 @@ class NeuralNetworkSecondStage(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        early_stopping_min_delta: float = 0.0,
-                       early_stopping_patience: int = 500,
-                       print_every_x: int = 10,
+                       early_stopping_patience: int = None,
+                       print_every_x: int = 50,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.
@@ -73,11 +75,20 @@ class NeuralNetworkSecondStage(nn.Module):
             batch_size = 128 if y.shape[0] < 10000 else 256
         batch_size = batch_size if batch_size else 100
         early_stopping_patience = early_stopping_patience if early_stopping_patience else int(np.sqrt(epochs))
-
+        x_validation = x_exog[:int(x_exog.shape[0] * 0.2)]
+        v_linear_validation = v_linear[:int(v_linear.shape[0] * 0.2)]
+        y_validation = y[:int(y.shape[0] * 0.2)]
+        x_exog_train = x_exog[int(x_exog.shape[0] * 0.2):]
+        v_linear_train = v_linear[int(v_linear.shape[0] * 0.2):]
+        y_train = y[int(y.shape[0] * 0.2):]
         # Convert numpy arrays to torch tensors
-        x_tensor = torch.tensor(x_exog, dtype=torch.float32)
-        v_tensor = torch.tensor(v_linear, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+        x_tensor_train = torch.tensor(x_exog_train, dtype=torch.float32)
+        v_tensor_train = torch.tensor(v_linear_train, dtype=torch.float32)
+        y_tensor_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
+
+        x_tensor_validation = torch.tensor(x_validation, dtype=torch.float32)
+        v_tensor_validation = torch.tensor(v_linear_validation, dtype=torch.float32)
+        y_tensor_validation = torch.tensor(y_validation, dtype=torch.float32).view(-1, 1)
 
         # Define the loss function and the optimizer
         criterion = nn.MSELoss()
@@ -85,7 +96,7 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
-        dataset = TensorDataset(x_tensor, v_tensor, y_tensor)
+        dataset = TensorDataset(x_tensor_train, v_tensor_train, y_tensor_train)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 
         # Training loop
@@ -102,16 +113,21 @@ class NeuralNetworkSecondStage(nn.Module):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+            self.eval()  # Set the model to evaluation mode
+            with torch.no_grad():
+                val_output = self(x_tensor_validation, v_tensor_validation)
+                val_loss = criterion(val_output, y_tensor_validation)
 
-            # Print the loss for every epoch
-            if counter % print_every_x == 0:
-                print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}')
-            counter += 1
+            # Print losses
+            if epoch % print_every_x == 0:
+                print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
+
             # Check early stopping
-            early_stopping(loss.item())
+            early_stopping(val_loss.item())
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
+
 
     def predict(self,
                 x_new_exog: np.array,

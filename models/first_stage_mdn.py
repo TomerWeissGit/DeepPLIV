@@ -118,7 +118,7 @@ class NeuralNetworkFirstStageMDN(nn.Module):
                        validation_data: tuple = None,
                        early_stopping_patience: int = None,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 10,
+                       print_every_x: int = 50,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.
