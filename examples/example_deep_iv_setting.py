@@ -1,71 +1,22 @@
-import random
-
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 from core.trainer import DeepPLIV
-from utils.helpers import plot_boxplot
 from sklearn.preprocessing import StandardScaler
-
-class SimDataCreatorHighDimension:
-    def __init__(self,
-                 n: int,
-                 beta_1: float,
-                 rho: float = 0.1):
-        """
-        Initialize the SimDataCreatorHighDimension class.
-
-        :param n: int, number of samples.
-        :param beta_1: float, coefficient for the endogenous variable.
-        """
-        self.n_x_1 = self.n_x_2 = self.n_y = n // 2
-        self.v = np.random.normal(0, 1, n)
-        self.e = np.array([np.random.normal(-5 * rho * v, 1 - rho ** 2, 1) for v in self.v[self.n_x_1:]])[:, 0]
-        self.beta_1 = beta_1
-        self.x_1, self.x_2, self.t_1, self.t_2, self.z_1, self.z_2 = self._generate_x_df()
-        self.y, self.s = self._generate_y_df_linear()
-
-    def _generate_x_df(self):
-        error_1 = self.v[:self.n_x_1]
-        error_2 = self.v[self.n_x_1:]
-        t_1 = np.array([random.randint(1, 10) for _ in range(self.n_x_1)])
-        t_2 = np.array([random.randint(1, 10) for _ in range(self.n_x_2)])
-        z_1 = np.random.normal(0, 1, self.n_x_1)
-        z_2 = np.random.normal(0, 1, self.n_x_2)
-        scaler = StandardScaler()
-        x_1 = scaler.fit_transform((25 + np.array([self._ft(t) for t in t_1]) * (z_1 + 3) ).reshape(-1, 1))[:, 0] + error_1
-        x_2 = scaler.transform((25 + np.array([self._ft(t) for t in t_2]) * (z_2 + 3)).reshape(-1, 1))[:, 0] + error_2
-
-        return x_1, x_2 , t_1, t_2 , z_1 , z_2
-
-    def _generate_y_df_linear(self):
-        s = np.array([random.randint(1, 7) for _ in range(self.n_y)])
-        scaler = StandardScaler()
-        y = scaler.fit_transform((100 + (10 + self.x_2) * s * self._ft(self.t_2)).reshape(-1, 1))[:, 0]
-        y = y + beta_1 * self.x_2 + self.e# scale the data
-        return y, s
-
-
-    def get_data(self):
-        return self.x_1, self.x_2, self.y, self.s, self.z_1, self.z_2, self.t_1, self.t_2
-
-    @staticmethod
-    def _ft(t):
-        return 2.0 * ((t - 5) ** 4 / 600 + np.exp(-((t - 5) / 0.5) ** 2) + t / 10. - 2)
-
-
+from data_creation import SimDataCreatorDeepIV
 class NaiveSRISPSHighDimension:
     def __init__(self,
-                 data_creator: SimDataCreatorHighDimension,
+                 data_creator: SimDataCreatorDeepIV,
                  epochs: int = 1000,
                  learning_rate: float = 0.001,
                  dropout: float = 0):
         """
         Initialize the NaiveSRISPSHighDimension class.
-        :param data_creator: SimDataCreatorHighDimension, an instance of the SimDataCreatorHighDimension class.
+        :param data_creator: SimDataCreatorDeepIV, an instance of the SimDataCreatorDeepIV class.
         :param epochs: int, the number of epochs for training the neural network model.
         :param learning_rate: float, the learning rate for training the neural network model.
+        :param dropout: float, the dropout rate for the neural network model.
         """
         self.data_creator = data_creator
         self.epochs = epochs
@@ -140,18 +91,18 @@ class NaiveSRISPSHighDimension:
         x_1 = self.x_1
         x_2 = self.x_2
 
-        first_stage_model = model.fit_first_stage_mdn(x_1, g_iv_1,
+        first_stage_model = model.fit_first_stage(x_1, g_iv_1,
                                                   epochs_first_stage=self.epochs,
                                                   learning_rate_first_stage=self.learning_rate,
                                                   dropout=self.dropout,
                                                   validation_data = (g_iv_2, x_2))
-        x_predicted = first_stage_model.predict_mean(g_iv_2)
+        x_predicted = first_stage_model.predict(g_iv_2).reshape(1, -1)
         x_error = self.x_2 - x_predicted
         x_predicted = x_predicted
         scaler = StandardScaler()
-        x_exog = np.concatenate((self.s.reshape(-1, 1),
+        x_exog = scaler.fit_transform(np.concatenate((self.s.reshape(-1, 1),
                                                       self.t_2.reshape(-1, 1),
-                                                      x_error.reshape(-1, 1)), axis=1)
+                                                      x_error.reshape(-1, 1)), axis=1))
         # SRI model
         model_sri = model.fit_second_stage(self.x_2.reshape(-1, 1),
                                            x_exog,
@@ -198,19 +149,17 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                                           rho: float = 0.1):
     """
     Run the genetic simulation for the high-dimensional case.
-     The simulation generates data using the SimDataCreatorHighDimension class
+     The simulation generates data using the SimDataCreatorDeepIV class
      and estimates the Naive SR-IV, SPS, and SRI models.
     :param num_simulations: parameter to control the number of simulations.
-    :param beta_u: parameter to control the coefficient for the confounding variable.
-    :param beta_3: parameter to control the coefficient for the interaction term between
     the endogenous and exogenous variables.
-    :param beta_2: parameter to control the coefficient for the exogenous variable.
     :param beta_1: parameter to control the coefficient for the endogenous variable.
     :param n: parameter to control the number of samples.
-    :param gamma_u: parameter to control the coefficient for the confounding variable.
     :param learning_rate: parameter to control the learning rate for the neural network model.
     :param epochs: parameter to control the number of epochs for training the neural network model.
     :param k: parameter to control the number of trainings for the neural network model.
+    :param dropout: parameter to control the dropout rate for the neural network model.
+    :param rho: parameter to control the correlation between the endogenous and instrumental variables.
     :return: pd.DataFrame, the results of the simulation.
     """
     results = {
@@ -220,7 +169,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     }
 
     for _ in range(num_simulations):
-        data_creator = SimDataCreatorHighDimension(n=n, beta_1=beta_1, rho=rho)
+        data_creator = SimDataCreatorDeepIV(n=n, beta_1=beta_1, rho=rho)
 
         naive_srisps = NaiveSRISPSHighDimension(data_creator=data_creator, epochs=epochs, learning_rate=learning_rate,
                                                 dropout=dropout)
@@ -244,6 +193,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
         coefficients_sps_mean = np.mean(coefficients_sps_lst, axis=0)
         coefficients_nff_mean = np.mean(coefficients_nff_lst, axis=0)
 
+        # noinspection PyUnboundLocalVariable
         for method, coefficients in [('SPS with NN', coefficients_sps),
                                      ('SRI with NN', coefficients_sri),
                                      ('Naive Feed Forward', coefficients_nff)]:
@@ -264,10 +214,6 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     if np.abs(coef)>10:
                         print(f'coef_{i} {method.lower()}: {coef}')
                         break
-                        results['method'].append(method)
-                        results['coefficient'].append(f'coef_{i}')
-                        results['value'].append(coef)
-                        print(f'coef_{i} {method.lower()}: {coef}')
 
     results_df = pd.DataFrame(results)
     results_df.to_pickle(f'deep_iv_sim/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
@@ -276,24 +222,24 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
 
 
 if __name__ == '__main__':
-    num_simulations: int = 50
+    _num_simulations: int = 100
     # This is the simulation for the first only the first part being non-linear
-    beta_1: float = -2
-    k: int = 1
-    lr: float = 0.001
-    for n in [2000, 10000, 20000, 40000]:
-        for rho in [0.5]:
-            dropout: float = 1000 / (1000 + n//2)
-            epochs: int = int((1.5 * 10 ** 7) / (n//2))
-            print(f'n: {n}, dropout: {dropout}, rho: {rho},')
-            res = run_high_dimension_genetic_simulation(num_simulations=num_simulations,
-                                                        n=n,
-                                                        rho=rho,
-                                                        beta_1=beta_1,
-                                                        learning_rate=lr,
-                                                        epochs = epochs,
-                                                        k = k,
-                                                        dropout=dropout)
+    _beta_1: float = -2
+    _k: int = 1
+    _lr: float = 0.001
+    for _n in [2000, 10000, 20000, 40000]:
+        for _rho in [0, 0.1, 0.25, 0.5, 0.75, 0.9]:
+            _dropout: float = 1000 / (1000 + _n//2)
+            _epochs: int = int((1.5 * 10 ** 7) / (_n//2))
+            print(f'n: {_n}, dropout: {_dropout}, rho: {_rho},')
+            res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
+                                                        n=_n,
+                                                        rho=_rho,
+                                                        beta_1=_beta_1,
+                                                        learning_rate=_lr,
+                                                        epochs = _epochs,
+                                                        k = _k,
+                                                        dropout=_dropout)
             # res = pd.read_pickle(f'deep_iv_sim/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
             # plot_boxplot(res, y_line=beta_1)
 

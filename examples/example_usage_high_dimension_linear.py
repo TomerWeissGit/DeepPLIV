@@ -5,13 +5,13 @@ from sklearn.linear_model import LinearRegression
 
 from core.trainer import DeepPLIV
 from sklearn.preprocessing import StandardScaler
-from data_creation import SimDataCreatorHighDimension
+from data_creation import SimDataCreatorHighDimensionLinear
 from utils.helpers import plot_boxplot
 
 
 class NaiveSRISPSHighDimension:
     def __init__(self,
-                 data_creator: SimDataCreatorHighDimension,
+                 data_creator: SimDataCreatorHighDimensionLinear,
                  epochs: int = 1000,
                  learning_rate: float = 0.001,
                  dropout: float = 0):
@@ -51,7 +51,8 @@ class NaiveSRISPSHighDimension:
         model.fit(self.xa, self.x_1)
         x_predicted = model.predict(self.xb)
         x = np.concatenate((x_predicted.reshape(-1, 1),
-                            self.g.reshape(-1, 1)),
+                            self.g.reshape(-1, 1),
+                            (x_predicted * self.g).reshape(-1, 1)),
                            axis=1)
         model = LinearRegression()
         model.fit(x, self.y)
@@ -113,7 +114,8 @@ class NaiveSRISPSHighDimension:
 
 
         # SPS model
-        x_exog = self.g.reshape(-1, 1)
+        scaler = StandardScaler()
+        x_exog = scaler.fit_transform(self.g.reshape(-1, 1))
 
         model_sps = model.fit_second_stage(x_predicted.reshape(-1, 1),
                                           x_exog,
@@ -141,18 +143,20 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                                           beta_1: float = 1,
                                           gamma_u: float = 1,
                                           beta_u: float = 1,
+                                          beta_3: float = 1,
                                           beta_2: float = 1,
                                           n: int = 20000,
                                           learning_rate: float = 0.01,
                                           epochs: int = 2000,
                                           k: int = 5,
-                                          dropout: float = 0.0, interaction=False):
+                                          dropout: float = 0.0):
     """
     Run the genetic simulation for the high-dimensional case.
      The simulation generates data using the SimDataCreatorHighDimension class
      and estimates the Naive SR-IV, SPS, and SRI models.
     :param num_simulations: parameter to control the number of simulations.
     :param beta_u: parameter to control the coefficient for the confounding variable.
+    :param beta_3: parameter to control the coefficient for the interaction term between
     the endogenous and exogenous variables.
     :param beta_2: parameter to control the coefficient for the exogenous variable.
     :param beta_1: parameter to control the coefficient for the endogenous variable.
@@ -164,7 +168,6 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     :param p_thr: parameter to control the threshold for the p-value.
     :param m: parameter to control the number of instrumental variables.
     :param dropout: parameter to control the dropout rate for the neural network model.
-    :param interaction: parameter to control the interaction term between the endogenous and exogenous variables.
     :return: pd.DataFrame, the results of the simulation.
     """
     results = {
@@ -174,9 +177,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     }
 
     for _ in range(num_simulations):
-        betas = (beta_1, beta_2, beta_u)
-        data_creator = SimDataCreatorHighDimension(n=n, m = m, betas=betas, gamma_u=gamma_u, p_thr=p_thr,
-                                                   interaction=interaction)
+        betas = (beta_1, beta_2, beta_3, beta_u)
+        data_creator = SimDataCreatorHighDimensionLinear(n=n, m = m, betas=betas, gamma_u=gamma_u, p_thr=p_thr)
 
         naive_srisps = NaiveSRISPSHighDimension(data_creator=data_creator, epochs=epochs, learning_rate=learning_rate,
                                                 dropout=dropout)
@@ -223,7 +225,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                         break
 
     results_df = pd.DataFrame(results)
-    results_df.to_pickle(f'high_dim_sim_linear/{n}_{num_simulations}_{beta_1}_{beta_u}_{interaction}.pkl')
+    results_df.to_pickle(f'high_dim_sim_linear/{n}_{num_simulations}_{beta_1}_{beta_u}.pkl')
     return results_df
 
 
@@ -231,36 +233,30 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
 if __name__ == '__main__':
     _num_simulations: int = 100
     # This is the simulation for the first only the first part being non-linear
-    _beta_1: float = 1
+    _beta_1: float = 0.5
     _k: int = 1
     _lr: float = 0.001
     _gamma_u = 1
-    _m = 200000
+    _beta_u = 1
+    _m = 2000000
     _p_thr = 0.05e-6
     for _n in [2000, 10000, 20000, 40000]:
-        for _beta_u in [1]:
-            for _interaction in [False]:
-                _dropout: float = 0.3
-                _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
-                print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
-                if _n == 2000 and _beta_u == 0.5:
-                    continue
-                else:
-                    res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
-                                                                gamma_u=_gamma_u,
-                                                                beta_u=_beta_u,
-                                                                n=_n,
-                                                                m = _m,
-                                                                p_thr=_p_thr,
-                                                                beta_1=_beta_1,
-                                                                learning_rate=_lr,
-                                                                epochs = _epochs,
-                                                                k = _k,
-                                                                dropout=_dropout,
-                                                                interaction=_interaction)
-                # res = pd.read_pickle(f'high_dim_sim_linear/{_n}_{_num_simulations}_{_beta_1}_{_beta_u}_{_interaction}.pkl')
-                #
-                # plot_boxplot(res, y_line=_beta_1)
+        for _beta_u in [0.5, 1, 2]:
+            _dropout: float = 0.5
+            _epochs: int = int((1.5 * 10 ** 7) / (_n//2))
+            print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
+            res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
+                                                        gamma_u=_gamma_u,
+                                                        beta_u=_beta_u,
+                                                        n=_n,
+                                                        m = _m,
+                                                        p_thr=_p_thr,
+                                                        beta_1=_beta_1,
+                                                        learning_rate=_lr,
+                                                        epochs = _epochs,
+                                                        k = _k,
+                                                        dropout=_dropout)
+            # plot_boxplot(res, y_line=_beta_1)
 
 
 

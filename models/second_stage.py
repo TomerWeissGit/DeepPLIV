@@ -56,7 +56,7 @@ class NeuralNetworkSecondStage(nn.Module):
                        learning_rate: float,
                        early_stopping_min_delta: float = 0.0,
                        early_stopping_patience: int = None,
-                       print_every_x: int = 50,
+                       print_every_x: int = 150,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.

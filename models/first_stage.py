@@ -46,14 +46,16 @@ class NeuralNetworkFirstStage(nn.Module):
                        epochs: int,
                        learning_rate: float,
                        validation_data: tuple = None,
-                       early_stopping_patience: int = 10,
+                       early_stopping_patience: int = None,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 10,
+                       print_every_x: int = 150,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.
         """
-        batch_size = batch_size if batch_size else 100
+        batch_size = 128 if y.shape[0] < 10000 else 256
+        early_stopping_patience = early_stopping_patience if early_stopping_patience else int(np.sqrt(epochs))
+
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
