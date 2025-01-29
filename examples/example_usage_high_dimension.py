@@ -237,30 +237,46 @@ if __name__ == '__main__':
     _gamma_u = 1
     _m = 200000
     _p_thr = 0.05e-6
+    _beta_u = 1
+    _interaction = False
     for _n in [2000, 10000, 20000, 40000]:
-        for _beta_u in [1]:
-            for _interaction in [False]:
-                _dropout: float = 0.3
-                _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
-                print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
-                if _n == 2000 and _beta_u == 0.5:
-                    continue
-                else:
-                    res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
-                                                                gamma_u=_gamma_u,
-                                                                beta_u=_beta_u,
-                                                                n=_n,
-                                                                m = _m,
-                                                                p_thr=_p_thr,
-                                                                beta_1=_beta_1,
-                                                                learning_rate=_lr,
-                                                                epochs = _epochs,
-                                                                k = _k,
-                                                                dropout=_dropout,
-                                                                interaction=_interaction)
-                # res = pd.read_pickle(f'high_dim_sim_linear/{_n}_{_num_simulations}_{_beta_1}_{_beta_u}_{_interaction}.pkl')
-                #
-                # plot_boxplot(res, y_line=_beta_1)
+        _dropout: float =  0.3
+        _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
+        print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
+
+        res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
+                                                    gamma_u=_gamma_u,
+                                                    beta_u=_beta_u,
+                                                    n=_n,
+                                                    m = _m,
+                                                    p_thr=_p_thr,
+                                                    beta_1=_beta_1,
+                                                    learning_rate=_lr,
+                                                    epochs = _epochs,
+                                                    k = _k,
+                                                    dropout=_dropout,
+                                                    interaction=_interaction)
+
+    _interaction = True
+    for _n in [2000, 10000, 20000, 40000]:
+        for _beta_u in [0.5, 2, 8]:
+            _dropout: float = 0.5
+            _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
+            print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
+
+            res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
+                                                        gamma_u=_gamma_u,
+                                                        beta_u=_beta_u,
+                                                        n=_n,
+                                                        m = _m,
+                                                        p_thr=_p_thr,
+                                                        beta_1=_beta_1,
+                                                        learning_rate=_lr,
+                                                        epochs = _epochs,
+                                                        k = _k,
+                                                        dropout=_dropout,
+                                                        interaction=_interaction)
+
 
 
 
