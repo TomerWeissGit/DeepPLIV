@@ -241,7 +241,7 @@ if __name__ == '__main__':
     _interaction = False
     for _n in [2000, 10000, 20000, 40000]:
         _dropout: float =  0.3
-        _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
+        _epochs: int = int((1.5 * 10 ** 7) / (_n//2))
         print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
 
         res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
@@ -261,7 +261,7 @@ if __name__ == '__main__':
     for _n in [2000, 10000, 20000, 40000]:
         for _beta_u in [0.5, 2, 8]:
             _dropout: float = 0.5
-            _epochs: int = int((1.5 * 10 ** 6) / (_n//2))
+            _epochs: int = int((1.5 * 10 ** 7) / (_n//2))
             print(f'n: {_n}, dropout: {_dropout}, beta_u: {_beta_u},')
 
             res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
