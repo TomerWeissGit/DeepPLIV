@@ -22,19 +22,20 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # First network (deep neural network) for the first input
         self.deep_net = nn.Sequential(
-            nn.Linear(x, 128),
+
+            nn.Linear(x, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 64),
+            nn.Linear(32, 16),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 32),
+            nn.Linear(16, 16),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
 
         # Final layer to combine both v and x
-        self.final_layer = nn.Linear(v + 32, 1)  # 8 from deep branch and 1 from linear resulting in size 9
+        self.final_layer = nn.Linear(v + 16, 1)  # 8 from deep branch and 1 from linear resulting in size 9
 
     def forward(self, x, v):
         # Pass the first input through the deep neural network
@@ -47,7 +48,7 @@ class NeuralNetworkSecondStage(nn.Module):
         output = self.final_layer(x)
         return output
 
-    @spinner_decorator("Training second stage")
+    # @spinner_decorator("Training second stage")
     def train_new_data(self,
                        x_exog: np.array,
                        v_linear: np.array,
@@ -56,7 +57,7 @@ class NeuralNetworkSecondStage(nn.Module):
                        learning_rate: float,
                        early_stopping_min_delta: float = 0.0,
                        early_stopping_patience: int = None,
-                       print_every_x: int = 150,
+                       print_every_x: int = 500,
                        batch_size: int = None) -> None:
         """
         Train the neural network model.
@@ -119,13 +120,13 @@ class NeuralNetworkSecondStage(nn.Module):
                 val_loss = criterion(val_output, y_tensor_validation)
 
             # Print losses
-            if epoch % print_every_x == 0:
-                print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
+            # if epoch % print_every_x == 0:
+            #     print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
 
             # Check early stopping
             early_stopping(val_loss.item())
             if early_stopping.early_stop:
-                print("Early stopping")
+                # print("Early stopping")
                 break
 
 

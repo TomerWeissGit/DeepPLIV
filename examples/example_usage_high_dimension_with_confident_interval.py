@@ -582,53 +582,6 @@ class SimDataCreatorHighDimension:
         return x
 
 
-class SimDataCreatorDeepIV:
-    def __init__(self,
-                 n: int,
-                 beta_1: float,
-                 rho: float = 0.1):
-        """
-        Initialize the SimDataCreatorDeepIV class.
-
-        :param n: int, number of samples.
-        :param beta_1: float, coefficient for the endogenous variable.
-        """
-        self.n_x_1 = self.n_x_2 = self.n_y = n // 2
-        self.v = np.random.normal(0, 1, n)
-        self.e = np.array([np.random.normal(-5 * rho * v, 1 - rho ** 2, 1) for v in self.v[self.n_x_1:]])[:, 0]
-        self.beta_1 = beta_1
-        self.x_1, self.x_2, self.t_1, self.t_2, self.z_1, self.z_2 = self._generate_x_df()
-        self.y, self.s = self._generate_y_df_linear()
-
-    def _generate_x_df(self):
-        error_1 = self.v[:self.n_x_1]
-        error_2 = self.v[self.n_x_1:]
-        t_1 = np.array([random.randint(1, 10) for _ in range(self.n_x_1)])
-        t_2 = np.array([random.randint(1, 10) for _ in range(self.n_x_2)])
-        z_1 = np.random.normal(0, 1, self.n_x_1)
-        z_2 = np.random.normal(0, 1, self.n_x_2)
-        scaler = StandardScaler()
-        x_1 = scaler.fit_transform((25 + np.array([self._ft(t) for t in t_1]) * (z_1 + 3) ).reshape(-1, 1))[:, 0] + error_1
-        x_2 = scaler.transform((25 + np.array([self._ft(t) for t in t_2]) * (z_2 + 3)).reshape(-1, 1))[:, 0] + error_2
-
-        return x_1, x_2 , t_1, t_2 , z_1 , z_2
-
-    def _generate_y_df_linear(self):
-        s = np.array([random.randint(1, 7) for _ in range(self.n_y)])
-        scaler = StandardScaler()
-        y = scaler.fit_transform((100 + (10 + self.x_2) * s * self._ft(self.t_2)).reshape(-1, 1))[:, 0]
-        y = y + self.beta_1 * self.x_2 + self.e# scale the data
-        return y, s
-
-
-    def get_data(self):
-        return self.x_1, self.x_2, self.y, self.s, self.z_1, self.z_2, self.t_1, self.t_2
-
-    @staticmethod
-    def _ft(t):
-        return 2.0 * ((t - 5) ** 4 / 600 + np.exp(-((t - 5) / 0.5) ** 2) + t / 10. - 2)
-
-
 class NaiveSRISPSHighDimension:
     def __init__(self,
                  data_creator: SimDataCreatorHighDimension,
@@ -832,7 +785,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                     results['value'].append(coef)
         coefficients_sri_lst, coefficients_sps_lst, coefficients_nff_lst = [], [], []
         for i in range(k):
-            coefficients_sps, coefficients_sri, coefficients_nff = naive_srisps.estimating_sri_sps_with_nn()
+            coefficients_sps, coefficients_sri, coefficients_nff = naive_srisps.estimating_sri_sps_with_nn_with_confident_interval()
             coefficients_sri_lst.append(coefficients_sri)
             coefficients_sps_lst.append(coefficients_sps)
             coefficients_nff_lst.append(coefficients_nff)

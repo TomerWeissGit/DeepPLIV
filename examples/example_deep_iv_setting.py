@@ -1,3 +1,5 @@
+from os.path import exists
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
@@ -5,6 +7,8 @@ from sklearn.linear_model import LinearRegression
 from core.trainer import DeepPLIV
 from sklearn.preprocessing import StandardScaler
 from data_creation import SimDataCreatorDeepIV
+from utils.helpers import plot_boxplot
+
 class NaiveSRISPSHighDimension:
     def __init__(self,
                  data_creator: SimDataCreatorDeepIV,
@@ -139,7 +143,7 @@ class NaiveSRISPSHighDimension:
         return model_sps_coef, mode_sri_coef, model_nff_coef
 
 
-def run_high_dimension_genetic_simulation(num_simulations=10,
+def run_deep_iv_simulation(num_simulations=10,
                                           beta_1: float = 1,
                                           n: int = 20000,
                                           learning_rate: float = 0.01,
@@ -162,6 +166,8 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
     :param rho: parameter to control the correlation between the endogenous and instrumental variables.
     :return: pd.DataFrame, the results of the simulation.
     """
+    if exists(f'deep_iv_sim_smaller_model/{n}_{num_simulations}_{beta_1}_{rho}.pkl'):
+        return pd.read_pickle(f'deep_iv_sim_smaller_model/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
     results = {
         'method': [],
         'coefficient': [],
@@ -216,34 +222,45 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
                         break
 
     results_df = pd.DataFrame(results)
-    results_df.to_pickle(f'deep_iv_sim/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
+    results_df.to_pickle(f'deep_iv_sim_smaller_model/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
     return results_df
 
 
+def run_single_config(n, rho):
+    _num_simulations = 300
+    _beta_1 = -2
+    _k = 1
+    _lr = 0.01
+
+    _dropout = 100 / (1000 + n // 2)
+    _epochs = int((1.5 * 10 ** 7) / (n // 2))
+
+    print(f"n: {n}, dropout: {_dropout}, rho: {rho}")
+
+    return run_deep_iv_simulation(
+        num_simulations=_num_simulations,
+        n=n,
+        rho=rho,
+        beta_1=_beta_1,
+        learning_rate=_lr,
+        epochs=_epochs,
+        k=_k,
+        dropout=_dropout
+    )
+
 
 if __name__ == '__main__':
-    _num_simulations: int = 100
-    # This is the simulation for the first only the first part being non-linear
-    _beta_1: float = -2
-    _k: int = 1
-    _lr: float = 0.001
-    for _n in [2000, 10000, 20000, 40000]:
-        for _rho in [0, 0.1, 0.25, 0.5, 0.75, 0.9]:
-            _dropout: float = 1000 / (1000 + _n//2)
-            _epochs: int = int((1.5 * 10 ** 7) / (_n//2))
-            print(f'n: {_n}, dropout: {_dropout}, rho: {_rho},')
-            res = run_high_dimension_genetic_simulation(num_simulations=_num_simulations,
-                                                        n=_n,
-                                                        rho=_rho,
-                                                        beta_1=_beta_1,
-                                                        learning_rate=_lr,
-                                                        epochs = _epochs,
-                                                        k = _k,
-                                                        dropout=_dropout)
-            # res = pd.read_pickle(f'deep_iv_sim/{n}_{num_simulations}_{beta_1}_{rho}.pkl')
-            # plot_boxplot(res, y_line=beta_1)
+    import concurrent.futures
 
+    _n_values = [2000, 10000, 20000, 40000]
+    _rho_values = [0, 0.1, 0.25, 0.5, 0.75, 0.9]
 
+    configs = [(n, rho) for n in _n_values for rho in _rho_values]
 
-
-
+    results = []
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [executor.submit(run_single_config, n, rho) for n, rho in configs]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+            # res = pd.read_pickle(f'deep_iv_sim_smaller_model/{_n}_{_num_simulations}_{_beta_1}_{_rho}.pkl')
+            # plot_boxplot(res, y_line=_beta_1)

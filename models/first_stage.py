@@ -17,16 +17,16 @@ class NeuralNetworkFirstStage(nn.Module):
         # Define layers
 
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 64),
+            nn.Linear(32, 16),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 32),
+            nn.Linear(16, 16),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, output_dim))
+            nn.Linear(16, output_dim))
 
 
 
@@ -40,7 +40,7 @@ class NeuralNetworkFirstStage(nn.Module):
         return x
 
 
-    @spinner_decorator("Training first stage")
+    # @spinner_decorator("Training first stage")
     def train_new_data(self, x: np.array,
                        y: np.array,
                        epochs: int,
@@ -48,8 +48,7 @@ class NeuralNetworkFirstStage(nn.Module):
                        validation_data: tuple = None,
                        early_stopping_patience: int = None,
                        early_stopping_min_delta: float = 0.0,
-                       print_every_x: int = 150,
-                       batch_size: int = None) -> None:
+                       print_every_x: int = 150) -> None:
         """
         Train the neural network model.
         """
@@ -95,13 +94,13 @@ class NeuralNetworkFirstStage(nn.Module):
                 val_loss = criterion(val_outputs, y_val_tensor)
 
             # Print losses
-            if epoch % print_every_x == 0:
-                print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
+            # if epoch % print_every_x == 0:
+                # print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
 
             # Check early stopping
             early_stopping(val_loss.item())
             if early_stopping.early_stop:
-                print("Early stopping")
+                # print("Early stopping")
                 break
 
     def predict(self, x_new: np.array) -> np.array:
