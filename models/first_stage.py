@@ -94,8 +94,8 @@ class NeuralNetworkFirstStage(nn.Module):
                 val_loss = criterion(val_outputs, y_val_tensor)
 
             # Print losses
-            # if epoch % print_every_x == 0:
-                # print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
+            if epoch % print_every_x == 0:
+                print(f"Epoch [{epoch + 1}/{epochs}], Loss: {loss.item(): .4f}, Val Loss: {val_loss.item(): .4f}")
 
             # Check early stopping
             early_stopping(val_loss.item())
