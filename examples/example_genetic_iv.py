@@ -14,7 +14,7 @@ from core.trainer import DeepPLIV
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("GeneticIVSim")
 
-# Global SNP interaction weights
+# Global interaction weights (to be initialized once)
 interaction_weights = None
 
 
@@ -30,11 +30,17 @@ def generate_causal_snp_with_target_r2(marker_snp, target_r2):
     return (z2 > np.median(z2)).astype(int)
 
 
-def simulate_disease(s1_star, s2_star, u, weights, noise_sd=0.1):
-    interactions = s1_star[:, None] * s2_star[None, :]
-    interaction_terms = interactions[np.triu_indices_from(interactions, k=1)]
-    weighted_sum = interaction_terms @ weights
-    return weighted_sum + u + np.random.normal(0, noise_sd, size=len(s1_star))
+def generate_interactions(snp_matrix):
+    n, m = snp_matrix.shape
+    interaction_indices = [(i, j) for i in range(m) for j in range(i+1, m)]
+    interactions = np.column_stack([snp_matrix[:, i] * snp_matrix[:, j] for i, j in interaction_indices])
+    return interactions, len(interaction_indices)
+
+
+def simulate_disease(snp_matrix, u, weights, noise_sd=0.1):
+    interactions, _ = generate_interactions(snp_matrix)
+    nonlinear = np.sin(interactions @ weights)  # or np.tanh, np.exp, etc.
+    return nonlinear + u + np.random.normal(0, noise_sd, size=snp_matrix.shape[0])
 
 
 def simulate_life_expectancy(disease, u, w1, w2, baseline_life=80, treatment_effect=-5,
@@ -43,21 +49,19 @@ def simulate_life_expectancy(disease, u, w1, w2, baseline_life=80, treatment_eff
             gamma1 * np.sin(3 * np.pi * w1) + gamma2 * w2 + np.random.normal(0, noise_sd, size=len(disease)))
 
 
-def simulate_dataset(n=10000, maf1=0.3, maf2=0.3, r2_1=0.9, r2_2=0.6, noise_sd=1.0):
+def simulate_dataset(n=10000, m=10, maf=0.3, r2=0.8, noise_sd=1.0):
     global interaction_weights
 
     u = np.random.normal(0, 1, size=n)
-    s1_marker = generate_marker_snp(n, maf1)
-    s2_marker = generate_marker_snp(n, maf2)
-    s1_star = generate_causal_snp_with_target_r2(s1_marker, r2_1)
-    s2_star = generate_causal_snp_with_target_r2(s2_marker, r2_2)
+    marker_snps = np.column_stack([generate_marker_snp(n, maf) for _ in range(m)])
+    causal_snps = np.column_stack([generate_causal_snp_with_target_r2(marker_snps[:, i], r2) for i in range(m)])
 
-    # Sample interaction weights once globally
+    interactions, total_interactions = generate_interactions(causal_snps)
+
     if interaction_weights is None:
-        total_interactions = int(len(s1_star) * (len(s2_star) - 1) //4)
         interaction_weights = np.random.normal(0, 1, total_interactions)
 
-    disease = simulate_disease(s1_star, s2_star, u, interaction_weights, noise_sd)
+    disease = simulate_disease(causal_snps, u, interaction_weights, noise_sd)
 
     w1 = np.random.uniform(0, 1, size=n)
     w2 = np.random.binomial(1, 0.3, size=n)
@@ -65,10 +69,8 @@ def simulate_dataset(n=10000, maf1=0.3, maf2=0.3, r2_1=0.9, r2_2=0.6, noise_sd=1
     y = simulate_life_expectancy(disease, u, w1, w2, noise_sd=noise_sd)
 
     return pd.DataFrame({
-        "s1_marker": s1_marker,
-        "s2_marker": s2_marker,
-        "s1_star": s1_star,
-        "s2_star": s2_star,
+        **{f"s{i+1}_marker": marker_snps[:, i] for i in range(m)},
+        **{f"s{i+1}_star": causal_snps[:, i] for i in range(m)},
         "u": u,
         "w1": w1,
         "w2": w2,
@@ -83,8 +85,8 @@ def run_naive_ols(df):
     return sm.OLS(y, X).fit().params[1]
 
 
-def run_2sls(df):
-    Z = df[["s1_star", "s2_star"]]
+def run_2sls(df, m=10):
+    Z = df[[f"s{i+1}_star" for i in range(m)]]
     stage1 = LinearRegression().fit(Z, df["disease"])
     df["disease_hat"] = stage1.predict(Z)
     X = sm.add_constant(np.column_stack((df["disease_hat"], df["w1"], df["w2"])))
@@ -92,8 +94,8 @@ def run_2sls(df):
     return sm.OLS(y, X).fit().params[1]
 
 
-def run_2sls_with_proxies(df):
-    Z = df[["s1_marker", "s2_marker"]]
+def run_2sls_with_proxies(df, m=10):
+    Z = df[[f"s{i+1}_marker" for i in range(m)]]
     stage1 = LinearRegression().fit(Z, df["disease"])
     df["disease_hat"] = stage1.predict(Z)
     X = sm.add_constant(np.column_stack((df["disease_hat"], df["w1"], df["w2"])))
@@ -101,9 +103,9 @@ def run_2sls_with_proxies(df):
     return sm.OLS(y, X).fit().params[1]
 
 
-def run_nn_estimates(df, epochs=5000, learning_rate=0.001, dropout=0):
+def run_nn_estimates(df, m=10, epochs=5000, learning_rate=0.01, dropout=0.05):
     model = DeepPLIV()
-    z = np.column_stack((df["s1_marker"], df["s2_marker"]))
+    z = df[[f"s{i+1}_marker" for i in range(m)]].values
     z_split = int(len(z) // 2)
     z1, z2 = z[:z_split], z[z_split:]
     x1, x2 = df["disease"].values[:z_split], df["disease"].values[z_split:]
@@ -117,8 +119,7 @@ def run_nn_estimates(df, epochs=5000, learning_rate=0.001, dropout=0):
 
     model.fit_first_stage(x1, z1, epochs_first_stage=epochs,
                           learning_rate_first_stage=learning_rate,
-                          dropout=dropout,
-                          validation_data=(z2, x2))
+                          dropout=dropout, validation_data=(z2, x2))
     x_pred = model.first_stage_model.predict(z2).reshape(-1, 1)
     x_err = x2.reshape(-1, 1) - x_pred
 
@@ -141,7 +142,7 @@ def run_nn_estimates(df, epochs=5000, learning_rate=0.001, dropout=0):
     return sri_coef, sps_coef
 
 
-def single_simulation_run(n=50000):
+def single_simulation_run(n=5000):
     df = simulate_dataset(n=n)
     return (
         run_naive_ols(df),
@@ -151,7 +152,7 @@ def single_simulation_run(n=50000):
     )
 
 
-def run_multiple_simulations_with_proxies_parallel(n_sim=300, n=50000, max_workers=None):
+def run_multiple_simulations_with_proxies_parallel(n_sim=5, n=20000, max_workers=5):
     ols_estimates = []
     proxy_iv_estimates = []
     true_iv_estimates = []
@@ -175,8 +176,7 @@ def run_multiple_simulations_with_proxies_parallel(n_sim=300, n=50000, max_worke
 
 
 if __name__ == '__main__':
-    ols, proxy_iv, true_iv, sri_nn, sps_nn = run_multiple_simulations_with_proxies_parallel(n_sim=10, n=5000,
-                                                                                            max_workers=4)
+    ols, proxy_iv, true_iv, sri_nn, sps_nn = run_multiple_simulations_with_proxies_parallel()
     print("Naive OLS:", np.mean(ols))
     print("2SLS with proxies:", np.mean(proxy_iv))
     print("2SLS with true SNPs:", np.mean(true_iv))
