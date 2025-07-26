@@ -1,189 +1,239 @@
-import logging
-import numpy as np
-import pandas as pd
-import statsmodels.api as sm
 from scipy.stats import norm
+import pickle
+import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
-import concurrent.futures
-
+# Default simulation run if file is executed directly
+import pandas as pd
+import numpy as np
+from joblib import Parallel, delayed
+import matplotlib.pyplot as plt
+import seaborn as sns
 from core.trainer import DeepPLIV
 
-# Setup logger
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("GeneticIVSim")
+# Settings
+n_snps_total = 200_000
+n_top_snps = 500
+K1 = K2 = 7
+rho = 0.9  # Can also try 0.1 or 0.9
+p01 = p02 = 0.3
+n_X = n_Y = 5000  # Can vary over [1000, 5000, 10000, 20000]
+n_samples = n_X + n_Y  # Total number of samples for SNPs
+# Separate sample sizes for exposure and outcome models
 
-# Global interaction weights (to be initialized once)
-interaction_weights = None
+effects_path = f"fixed_effects_{n_X}_new.pkl"
 
+# Step 1: Load or generate true SNP effects and estimated effects
+# if os.path.exists(effects_path):
+#     with open(effects_path, "rb") as f:
+#         effect_dict = pickle.load(f)
+#     gamma_j1 = effect_dict["gamma_j1"]
+#     gamma_j2 = effect_dict["gamma_j2"]
+#     gamma_jm12 = effect_dict["gamma_jm12"]
+#     gamma_j1121 = effect_dict["gamma_j1121"]
+# else:
+np.random.seed(42)
+alpha = np.random.normal(0, np.sqrt(0.1), n_snps_total)
+top_indices = np.argsort(np.abs(alpha))[-n_top_snps:]
+gamma_pool = alpha[top_indices]
+selected_effects = np.random.choice(gamma_pool, size=70, replace=False)
 
-def generate_marker_snp(n, maf=0.3):
-    return np.random.binomial(1, maf, size=n)
+gamma_j1 = selected_effects[0:K1]
+gamma_j2 = selected_effects[K1:K1 + K2]
+gamma_jm12 = selected_effects[K1 + K2:K1 + K2 + K1 * K2].reshape(K1, K2)
+gamma_j1121 = selected_effects[-K2:]
 
-
-def generate_causal_snp_with_target_r2(marker_snp, target_r2):
-    n = len(marker_snp)
-    rho = np.sqrt(target_r2)
-    z1 = norm.ppf((np.argsort(np.argsort(marker_snp)) + 1) / (n + 1))
-    z2 = rho * z1 + np.sqrt(1 - rho ** 2) * np.random.normal(size=n)
-    return (z2 > np.median(z2)).astype(int)
-
-
-def generate_interactions(snp_matrix):
-    n, m = snp_matrix.shape
-    interaction_indices = [(i, j) for i in range(m) for j in range(i+1, m)]
-    interactions = np.column_stack([snp_matrix[:, i] * snp_matrix[:, j] for i, j in interaction_indices])
-    return interactions, len(interaction_indices)
-
-
-def simulate_disease(snp_matrix, u, weights, noise_sd=0.1):
-    interactions, _ = generate_interactions(snp_matrix)
-    nonlinear = np.sin(interactions @ weights)  # or np.tanh, np.exp, etc.
-    return nonlinear + u + np.random.normal(0, noise_sd, size=snp_matrix.shape[0])
-
-
-def simulate_life_expectancy(disease, u, w1, w2, baseline_life=80, treatment_effect=-5,
-                             confounder_effect=3, gamma1=2.5, gamma2=-4, noise_sd=3.0):
-    return (baseline_life + treatment_effect * disease + confounder_effect * u +
-            gamma1 * np.sin(3 * np.pi * w1) + gamma2 * w2 + np.random.normal(0, noise_sd, size=len(disease)))
-
-
-def simulate_dataset(n=10000, m=10, maf=0.3, r2=0.8, noise_sd=1.0):
-    global interaction_weights
-
-    u = np.random.normal(0, 1, size=n)
-    marker_snps = np.column_stack([generate_marker_snp(n, maf) for _ in range(m)])
-    causal_snps = np.column_stack([generate_causal_snp_with_target_r2(marker_snps[:, i], r2) for i in range(m)])
-
-    interactions, total_interactions = generate_interactions(causal_snps)
-
-    if interaction_weights is None:
-        interaction_weights = np.random.normal(0, 1, total_interactions)
-
-    disease = simulate_disease(causal_snps, u, interaction_weights, noise_sd)
-
-    w1 = np.random.uniform(0, 1, size=n)
-    w2 = np.random.binomial(1, 0.3, size=n)
-
-    y = simulate_life_expectancy(disease, u, w1, w2, noise_sd=noise_sd)
-
-    return pd.DataFrame({
-        **{f"s{i+1}_marker": marker_snps[:, i] for i in range(m)},
-        **{f"s{i+1}_star": causal_snps[:, i] for i in range(m)},
-        "u": u,
-        "w1": w1,
-        "w2": w2,
-        "disease": disease,
-        "life_expectancy": y
-    })
+with open(effects_path, "wb") as f:
+    pickle.dump({
+        "gamma_j1": gamma_j1,
+        "gamma_j2": gamma_j2,
+        "gamma_jm12": gamma_jm12,
+        "gamma_j1121": gamma_j1121
+    }, f)
 
 
-def run_naive_ols(df):
-    X = sm.add_constant(np.column_stack((df["disease"], np.sin(3 * np.pi * df["w1"]), df["w2"])))
-    y = df["life_expectancy"]
-    return sm.OLS(y, X).fit().params[1]
+# Step 2: Simulate SNPs for each gene with LD using latent probit model
+def simulate_snp_block(n, K, p0, rho):
+    Z = np.random.normal(size=n)  # shared latent variable per subject
+    snps = np.zeros((n, K))
+    for j in range(K):
+        eps = np.random.normal(size=n)
+        p = norm.cdf(norm.ppf(p0) + np.sqrt(rho) * Z + np.sqrt(1 - rho) * eps)
+        snps[:, j] = np.random.binomial(2, p)
+    return snps
 
 
-def run_2sls(df, m=10):
-    Z = df[[f"s{i+1}_star" for i in range(m)]]
-    stage1 = LinearRegression().fit(Z, df["disease"])
-    df["disease_hat"] = stage1.predict(Z)
-    X = sm.add_constant(np.column_stack((df["disease_hat"], df["w1"], df["w2"])))
-    y = df["life_expectancy"]
-    return sm.OLS(y, X).fit().params[1]
+# Simulate dataset for X or Y
+def simulate_snp_dataset(n, noise_sd=1.0):
+    U = np.random.normal(0, 1, size=n)
+    S1 = simulate_snp_block(n, K1, p01, rho)
+    S2 = simulate_snp_block(n, K2, p02, rho)
+    return U, S1, S2
 
 
-def run_2sls_with_proxies(df, m=10):
-    Z = df[[f"s{i+1}_marker" for i in range(m)]]
-    stage1 = LinearRegression().fit(Z, df["disease"])
-    df["disease_hat"] = stage1.predict(Z)
-    X = sm.add_constant(np.column_stack((df["disease_hat"], df["w1"], df["w2"])))
-    y = df["life_expectancy"]
-    return sm.OLS(y, X).fit().params[1]
+# IV Estimation methods
+def run_naive_ols(df_y):
+    X = sm.add_constant(df_y[["X"]])
+    y = df_y["Y"]
+    return sm.OLS(y, X).fit().params.iloc[1]
 
 
-def run_nn_estimates(df, m=10, epochs=5000, learning_rate=0.01, dropout=0.05):
-    model = DeepPLIV()
-    z = df[[f"s{i+1}_marker" for i in range(m)]].values
-    z_split = int(len(z) // 2)
-    z1, z2 = z[:z_split], z[z_split:]
-    x1, x2 = df["disease"].values[:z_split], df["disease"].values[z_split:]
-    y = df["life_expectancy"].values[z_split:]
-    w1 = df["w1"].values[z_split:]
-    w2 = df["w2"].values[z_split:]
-    w_obs = np.column_stack((w1, w2))
-    scaler = StandardScaler()
-    z1 = scaler.fit_transform(z1)
-    z2 = scaler.transform(z2)
-
-    model.fit_first_stage(x1, z1, epochs_first_stage=epochs,
-                          learning_rate_first_stage=learning_rate,
-                          dropout=dropout, validation_data=(z2, x2))
-    x_pred = model.first_stage_model.predict(z2).reshape(-1, 1)
-    x_err = x2.reshape(-1, 1) - x_pred
-
-    sri_model = model.fit_second_stage(x2.reshape(-1, 1),
-                                       np.concatenate((x_err, w_obs), axis=1),
-                                       y.reshape(-1, 1),
-                                       epochs_second_stage=epochs,
-                                       learning_rate_second_stage=learning_rate,
-                                       dropout=dropout)
-
-    sps_model = model.fit_second_stage(x_pred,
-                                       w_obs,
-                                       y.reshape(-1, 1),
-                                       epochs_second_stage=epochs,
-                                       learning_rate_second_stage=learning_rate,
-                                       dropout=dropout)
-
-    sri_coef = sri_model.final_layer.weight.detach().numpy()[0, 0]
-    sps_coef = sps_model.final_layer.weight.detach().numpy()[0, 0]
-    return sri_coef, sps_coef
+def run_2sls(df_x, df_y):
+    Z = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]]
+    Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]]
+    X_hat = LinearRegression().fit(Z, df_x["X"]).predict(Z_Y)
+    X_stack = sm.add_constant(X_hat)
+    y = df_y["Y"]
+    return sm.OLS(y, X_stack).fit().params.iloc[1]
 
 
-def single_simulation_run(n=5000):
-    df = simulate_dataset(n=n)
-    return (
-        run_naive_ols(df),
-        run_2sls_with_proxies(df),
-        run_2sls(df),
-        *run_nn_estimates(df)
+def run_2sri(df_x, df_y):
+    # Instruments
+    Z = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]]
+    Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]]
+
+    # First-stage: Predict X from Z
+    first_stage = LinearRegression().fit(Z, df_x["X"])
+    X_hat = first_stage.predict(Z_Y)
+
+    # Residuals (instruments for the endogeneity)
+    X_err = df_y["X"] - X_hat
+
+    # Second-stage: Y ~ X + residuals
+    X_stack = sm.add_constant(np.column_stack((df_y["X"], X_err)))
+    y = df_y["Y"]
+
+    # Fit OLS
+    model = sm.OLS(y, X_stack).fit()
+    coef = model.params.iloc[1]  # coefficient on X
+
+    return coef
+
+
+def gen_data():
+    U_X, S1_X, S2_X = simulate_snp_dataset(n_X)
+    U_Y, S1_Y, S2_Y = simulate_snp_dataset(n_Y)
+
+    X = (
+            S1_X @ gamma_j1 +
+            S2_X @ gamma_j2 +
+            np.sum(S1_X[:, :, None] * S2_X[:, None, :] * gamma_jm12[None, :, :], axis=(1, 2)) +
+            (S1_X[:, 0] * S1_X[:, 1]) * (S2_X @ gamma_j1121) +
+            U_X +
+            np.random.normal(0, 1.0, size=n_X)
+    )
+    X_Y = (
+            S1_Y @ gamma_j1 +
+            S2_Y @ gamma_j2 +
+            np.sum(S1_X[:, :, None] * S2_Y[:, None, :] * gamma_jm12[None, :, :], axis=(1, 2)) +
+            (S1_Y[:, 0] * S1_Y[:, 1]) * (S2_Y @ gamma_j1121) +
+            U_Y +
+            np.random.normal(0, 1.0, size=n_Y)
     )
 
-
-def run_multiple_simulations_with_proxies_parallel(n_sim=5, n=20000, max_workers=5):
-    ols_estimates = []
-    proxy_iv_estimates = []
-    true_iv_estimates = []
-    sri_nn_estimates = []
-    sps_nn_estimates = []
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(single_simulation_run, n=n) for _ in range(n_sim)]
-        for fut in tqdm(concurrent.futures.as_completed(futures), total=n_sim):
-            try:
-                ols, proxy_iv, true_iv, sri, sps = fut.result()
-                ols_estimates.append(ols)
-                proxy_iv_estimates.append(proxy_iv)
-                true_iv_estimates.append(true_iv)
-                sri_nn_estimates.append(sri)
-                sps_nn_estimates.append(sps)
-            except Exception as e:
-                logger.warning(f"Simulation failed: {e}")
-
-    return ols_estimates, proxy_iv_estimates, true_iv_estimates, sri_nn_estimates, sps_nn_estimates
+    Y = X_Y - U_Y + np.random.normal(0, 1.0, size=n_Y)
+    df_x = pd.DataFrame({
+        **{f"S1_{j + 1}": S1_X[:, j] for j in range(K1)},
+        **{f"S2_{j + 1}": S2_X[:, j] for j in range(K2)},
+        "X": X,
+        "U": U_X
+    })
+    df_y = pd.DataFrame({
+        **{f"S1_{j + 1}": S1_Y[:, j] for j in range(K1)},
+        **{f"S2_{j + 1}": S2_Y[:, j] for j in range(K2)},
+        "X": X_Y,
+        "Y": Y,
+        "U": U_Y
+    })
+    return df_x, df_y
 
 
-if __name__ == '__main__':
-    ols, proxy_iv, true_iv, sri_nn, sps_nn = run_multiple_simulations_with_proxies_parallel()
-    print("Naive OLS:", np.mean(ols))
-    print("2SLS with proxies:", np.mean(proxy_iv))
-    print("2SLS with true SNPs:", np.mean(true_iv))
-    print("SRI with NN:", np.mean(sri_nn))
-    print("SPS with NN:", np.mean(sps_nn))
-    print("OLS std:", np.std(ols))
-    print("2SLS with proxies std:", np.std(proxy_iv))
-    print("2SLS with true SNPs std:", np.std(true_iv))
-    print("SRI with NN std:", np.std(sri_nn))
-    print("SPS with NN std:", np.std(sps_nn))
+def estimating_sri_sps_with_nn(df_x, df_y, epochs=5000, learning_rate=0.01, dropout=0.01):
+    model = DeepPLIV()
+    Z_X = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
+    Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
+    X = df_x["X"].values
+    X_Y = df_y["X"].values
+    Y = df_y["Y"].values
+
+    n = len(df_x)
+    dummy_v = np.ones((X_Y.shape[0], 1))
+
+    scaler = StandardScaler()
+    zx = scaler.fit_transform(Z_X)
+    zy = scaler.transform(Z_Y)
+    model.fit_first_stage(zx,
+                          X,
+                          epochs_first_stage=epochs,
+                          learning_rate_first_stage=learning_rate,
+                          dropout=dropout,
+                          validation_data=(Z_Y, X_Y))
+    x_pred = model.first_stage_model.predict(zy).reshape(-1, 1)
+    x_err = X_Y.reshape(-1, 1) - x_pred
+    x_exog_sri = StandardScaler().fit_transform(x_err)
+    model_sri = model.fit_second_stage(X_Y.reshape(-1, 1), x_exog_sri, Y.reshape(-1, 1),
+                                       epochs_second_stage=epochs,
+                                       learning_rate_second_stage=learning_rate,
+                                       dropout=dropout)
+    sri_coef = model_sri.final_layer.weight.detach().numpy()[0, 0]
+    model_sps = model.fit_second_stage(x_pred, dummy_v, Y.reshape(-1, 1),
+                                       epochs_second_stage=epochs,
+                                       learning_rate_second_stage=learning_rate,
+                                       dropout=dropout)
+    # Coefficient for the SPS model
+    print(f'sps model coefficients:{model_sps.final_layer.weight}')
+    sps_coef = model_sps.final_layer.weight.detach().numpy()[0, 0]
+
+    model_nff = model.fit_second_stage(X_Y.reshape(-1, 1), dummy_v, Y.reshape(-1, 1),
+                                       epochs_second_stage=epochs,
+                                       learning_rate_second_stage=learning_rate,
+                                       dropout=dropout)
+    nff_coef = model_nff.final_layer.weight.detach().numpy()[0, 0]
+    return sps_coef, sri_coef, nff_coef
+
+
+def run_single_sim(seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    df_x, df_y = gen_data()
+    coefs = estimating_sri_sps_with_nn(df_x, df_y, epochs=5000, learning_rate=0.0001, dropout=0.01)
+    return {
+        "naive_ols": run_naive_ols(df_y),
+        "iv_2sls": run_2sls(df_x, df_y),
+        "iv_2sri": run_2sri(df_x, df_y),
+        "nn-sps": coefs[0],
+        "nn-sri": coefs[1],
+        "nff": coefs[2]
+    }
+
+
+if __name__ == "__main__":
+    NUM_SIMULATIONS = 5
+    N_JOBS = 5  # Use all cores
+
+    print("Running simulations in parallel...")
+    results = Parallel(n_jobs=N_JOBS)(delayed(run_single_sim)(i) for i in range(NUM_SIMULATIONS))
+
+    # Convert to DataFrame and save
+    df_results = pd.DataFrame(results)
+    df_results.to_csv("simulation_interaction/simulation_results_low_dropout_50.csv", index=False)
+    print("Results saved to simulation_results.csv")
+
+    # Summary
+    print("\n--- Summary Statistics ---")
+    for key in df_results.columns:
+        values = df_results[key]
+        mean = values.mean()
+        std = values.std()
+        ci = np.percentile(values, [2.5, 97.5])
+        print(f"{key:<8} - Mean: {mean:.4f}, Std: {std:.4f}, CI: [{ci[0]:.4f}, {ci[1]:.4f}]")
+
+    # Boxplot
+    df_melted = df_results.melt(var_name="Model", value_name="Coefficient")
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=df_melted, x="Model", y="Coefficient")
+    plt.title("Coefficient Distribution by Model")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig("boxplot_hdo.png")
+    plt.show()

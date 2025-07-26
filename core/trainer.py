@@ -48,7 +48,9 @@ class DeepPLIV:
         v_hat = self.predict_first_stage(z)
         return self.predict_second_stage(v_hat, x)
 
-    def fit_first_stage(self, v_1: np.array, z_1: np.array,
+    def fit_first_stage(self,
+                        z_1: np.array,
+                        v_1: np.array,
                         epochs_first_stage: int,
                         learning_rate_first_stage: float ,
                         dropout: float = 0,
