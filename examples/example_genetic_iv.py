@@ -19,11 +19,11 @@ from core.trainer import DeepPLIV
 n_snps_total = 200_000
 n_top_snps = 500
 K1 = K2 = 7
-rho = 0.1
-p01 = p02 = 0.25
-p01_y = p02_y = 0.4
+rho = 0.9
+p01 = p02 = 0.2
+p01_y = p02_y = 0.3
 
-n_X = n_Y = 40000
+n_X = n_Y = 5000
 NUM_SIMULATIONS = 100
 rho_y = 0.9
 N_JOBS = 5
@@ -175,7 +175,7 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, learning_rate, dropout):
 def run_single_sim():
     df_x = gen_data(n_X, p01, p02)
     df_y = gen_data(n_Y, p01_y, p02_y)
-    sps, sri, nff = estimating_sri_sps_with_nn(df_x, df_y, epochs=1000, learning_rate=0.1, dropout=0.01)
+    sps, sri, nff = estimating_sri_sps_with_nn(df_x, df_y, epochs=1000, learning_rate=0.01, dropout=0.1)
     return {
         "naive_ols": run_naive_ols(df_y),
         "iv_2sls": run_2sls(df_x, df_y),
