@@ -518,7 +518,8 @@ def load_fixed_effects():
     global gamma_j1, gamma_j2, gamma_jm12, gamma_j1121
 
     # Get S3 URI from environment variable
-    s3_uri = os.getenv("S3_URI")
+    s3_uri = os.getenv("S3_URI") + "MR_SIM/"
+
 
     # Full file path
     file_uri = s3_uri + "fixed_effects.pkl"
