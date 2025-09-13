@@ -529,7 +529,7 @@ def load_fixed_effects():
     key = "/".join(key_parts)
 
     # Download object from S3
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
     obj = s3.get_object(Bucket=bucket, Key=key)
     effect_dict = pickle.loads(obj["Body"].read())
 
