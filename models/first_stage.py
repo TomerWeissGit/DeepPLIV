@@ -17,10 +17,10 @@ class NeuralNetworkFirstStage(nn.Module):
         # Define layers
 
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 64),
+            nn.Linear(64, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 16),
