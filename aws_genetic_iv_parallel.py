@@ -506,19 +506,39 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, **nn_kwargs):
     return sps_ci, sri_ci, naive_ci
 
 
-def load_fixed_effects(effects_path: str = "fixed_effects.pkl"):
-    """Load fixed effects from pickle file"""
+import os
+import pickle
+import boto3
+import logging
+
+logger = logging.getLogger(__name__)
+
+def load_fixed_effects():
+    """Load fixed effects from pickle file in S3"""
     global gamma_j1, gamma_j2, gamma_jm12, gamma_j1121
 
-    with open(effects_path, "rb") as f:
-        effect_dict = pickle.load(f)
+    # Get S3 URI from environment variable
+    s3_uri = os.getenv("S3_URI")
 
+    # Full file path
+    file_uri = s3_uri + "fixed_effects.pkl"
+
+    # Parse bucket and key
+    _, _, bucket, *key_parts = file_uri.split("/")
+    key = "/".join(key_parts)
+
+    # Download object from S3
+    s3 = boto3.client("s3")
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    effect_dict = pickle.loads(obj["Body"].read())
+
+    # Assign globals
     gamma_j1 = effect_dict["gamma_j1"]
     gamma_j2 = effect_dict["gamma_j2"]
     gamma_jm12 = effect_dict["gamma_jm12"]
     gamma_j1121 = effect_dict["gamma_j1121"]
 
-    logger.info("Fixed effects loaded successfully")
+    logger.info("Fixed effects loaded successfully from %s", file_uri)
 
 
 class DatasetGenerator:
