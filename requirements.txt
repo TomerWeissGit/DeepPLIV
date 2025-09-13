@@ -10,8 +10,8 @@ scikit-optimize~=0.10.2
 optuna~=4.1.0
 scipy~=1.13.1
 # AWS and async dependencies for aws_genetic_iv_parallel.py
-boto3
-aioboto3
-aiofiles
-statsmodels
-python-dotenv
+boto3==1.40.18
+aioboto3==7.0.0
+aiofiles==24.1.0
+statsmodels==0.14.5
+python-dotenv==1.1.1
