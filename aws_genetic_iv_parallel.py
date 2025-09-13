@@ -3,18 +3,17 @@ AWS S3 Parallel Execution System for Genetic IV Simulation
 Optimized for large-scale parallel processing on EC2 with S3 storage
 """
 
-import os
 import json
-import pickle
 import gzip
 import asyncio
-import logging
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing as mp
-import numpy as np
+import os
+import pickle
+import logging
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -44,6 +43,8 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
+    MAX_OUTER_WORKERS: int = int(os.getenv("MAX_OUTER_WORKERS", "2"))   # datasets in flight
+    MAX_INNER_WORKERS: int = int(os.getenv("MAX_INNER_WORKERS", "16"))  # ensemble/bootstrap jobs
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -388,22 +389,17 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
         return None, None, None
 
 
-async def ensemble_nn(df_x, df_y, M, **nn_kwargs):
-    """Async ensemble NN estimation"""
+async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
+    """Async ensemble NN estimation with capped inner workers"""
     loop = asyncio.get_event_loop()
 
     def run_single_nn():
         return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
 
-    tasks = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        for _ in range(M):
-            task = loop.run_in_executor(executor, run_single_nn)
-            tasks.append(task)
-
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [loop.run_in_executor(executor, run_single_nn) for _ in range(M)]
         results = await asyncio.gather(*tasks)
 
-    # Filter out failed results
     valid_results = [r for r in results if r[0] is not None]
     if not valid_results:
         return None, None, None
@@ -415,14 +411,9 @@ async def ensemble_nn(df_x, df_y, M, **nn_kwargs):
     return np.mean(sps_list), np.mean(sri_list), np.mean(naive_list)
 
 
-async def bootstrap_ci(base_func, df_x, df_y, B, ci_level):
-    """Async bootstrap confidence interval for linear models"""
-    if B == 1:
-        est = base_func(df_x, df_y)
-        return est, (est, est)
-
+async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
+    """Parallel bootstrap CI with capped inner workers"""
     loop = asyncio.get_event_loop()
-    estimates = []
     n_x, n_y = len(df_x), len(df_y)
 
     def bootstrap_sample():
@@ -430,7 +421,7 @@ async def bootstrap_ci(base_func, df_x, df_y, B, ci_level):
         idx_y = np.random.choice(n_y, n_y, replace=True)
         return base_func(df_x.iloc[idx_x], df_y.iloc[idx_y])
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         tasks = [loop.run_in_executor(executor, bootstrap_sample) for _ in range(B)]
         estimates = await asyncio.gather(*tasks)
 
@@ -438,78 +429,41 @@ async def bootstrap_ci(base_func, df_x, df_y, B, ci_level):
     return np.mean(estimates), (ci_low, ci_high)
 
 
-async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, **nn_kwargs):
-    """
-    Bootstrap confidence interval for ensemble NN estimates
-    Uses 95% quantile of absolute errors from ensemble estimate
-
-    Args:
-        ensemble_estimates: Tuple of (sps_ensemble, sri_ensemble, naive_ensemble)
-        df_x, df_y: Original datasets
-        B: Number of bootstrap samples (each runs single model, not ensemble)
-        **nn_kwargs: Neural network parameters
-
-    Returns:
-        Tuple of (sps_ci, sri_ci, naive_ci) where each is (low, high)
-    """
+async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, **nn_kwargs):
+    """Parallel bootstrap CI for ensemble NN with capped inner workers"""
     sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
-
-    if B == 1:
-        return (sps_ensemble, sps_ensemble), (sri_ensemble, sri_ensemble), (naive_ensemble, naive_ensemble)
-
-    sps_errors = []
-    sri_errors = []
-    naive_errors = []
     n_x, n_y = len(df_x), len(df_y)
 
-    async def bootstrap_single_sample():
-        # Create bootstrap sample
+    def bootstrap_single_sample():
         idx_x = np.random.choice(n_x, n_x, replace=True)
         idx_y = np.random.choice(n_y, n_y, replace=True)
         df_x_boot = df_x.iloc[idx_x].reset_index(drop=True)
         df_y_boot = df_y.iloc[idx_y].reset_index(drop=True)
 
-        # Run single NN model on bootstrap sample (not ensemble)
         sps_boot, sri_boot, naive_boot = estimating_sri_sps_with_nn(
             df_x_boot, df_y_boot, **nn_kwargs
         )
+        return (
+            abs(sps_boot - sps_ensemble) if sps_boot else 0,
+            abs(sri_boot - sri_ensemble) if sri_boot else 0,
+            abs(naive_boot - naive_ensemble) if naive_boot else 0,
+        )
 
-        # Calculate absolute errors from original ensemble estimates
-        sps_error = abs(sps_boot - sps_ensemble) if sps_boot is not None else 0
-        sri_error = abs(sri_boot - sri_ensemble) if sri_boot is not None else 0
-        naive_error = abs(naive_boot - naive_ensemble) if naive_boot is not None else 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [executor.submit(bootstrap_single_sample) for _ in range(B)]
+        results = [t.result() for t in tasks]
 
-        return sps_error, sri_error, naive_error
+    sps_errors, sri_errors, naive_errors = zip(*results)
 
-    # Run bootstrap samples
-    bootstrap_results = []
-    for _ in range(B):
-        result = await bootstrap_single_sample()
-        bootstrap_results.append(result)
-
-    # Extract errors
-    for sps_err, sri_err, naive_err in bootstrap_results:
-        sps_errors.append(sps_err)
-        sri_errors.append(sri_err)
-        naive_errors.append(naive_err)
-
-    # Calculate 95% quantile errors
-    error_95_sps = np.percentile(sps_errors, 95)
-    error_95_sri = np.percentile(sri_errors, 95)
-    error_95_naive = np.percentile(naive_errors, 95)
-
-    # Construct confidence intervals: ensemble_est ± error_95%
-    sps_ci = (sps_ensemble - error_95_sps, sps_ensemble + error_95_sps)
-    sri_ci = (sri_ensemble - error_95_sri, sri_ensemble + error_95_sri)
-    naive_ci = (naive_ensemble - error_95_naive, naive_ensemble + error_95_naive)
+    sps_ci = (sps_ensemble - np.percentile(sps_errors, 95),
+              sps_ensemble + np.percentile(sps_errors, 95))
+    sri_ci = (sri_ensemble - np.percentile(sri_errors, 95),
+              sri_ensemble + np.percentile(sri_errors, 95))
+    naive_ci = (naive_ensemble - np.percentile(naive_errors, 95),
+                naive_ensemble + np.percentile(naive_errors, 95))
 
     return sps_ci, sri_ci, naive_ci
 
-
-import os
-import pickle
-import boto3
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +473,6 @@ def load_fixed_effects():
 
     # Get S3 URI from environment variable
     s3_uri = os.getenv("S3_URI") + "MR_SIM/"
-
 
     # Full file path
     file_uri = s3_uri + "fixed_effects.pkl"
@@ -583,7 +536,7 @@ class DatasetGenerator:
 
             # Log file size for debugging
             file_size = os.path.getsize(local_path)
-            logger.info(f"Generated config_{config_id}_run_{run_id}: {file_size/1024:.1f}KB (compressed)")
+            logger.info(f"Generated config_{config_id}_run_{run_id}: {file_size / 1024:.1f}KB (compressed)")
 
             return local_path
         except Exception as e:
@@ -683,7 +636,8 @@ class DatasetGenerator:
             # Submit all tasks
             future_to_task = {}
             for config_id, config_params, run_id, temp_dir in all_generation_tasks:
-                future = executor.submit(self.generate_single_dataset_to_file, config_id, config_params, run_id, temp_dir)
+                future = executor.submit(self.generate_single_dataset_to_file, config_id, config_params, run_id,
+                                         temp_dir)
                 future_to_task[future] = (config_id, run_id)
 
             # Collect results as they complete
@@ -709,7 +663,7 @@ class DatasetGenerator:
         # Create all upload tasks for parallel execution
         upload_tasks = []
         for config_id, config_info in enumerate([(n_val, rho_val, p01y_val, gamma_u_val, beta_u_val)
-                                                for n_val, rho_val, p01y_val, gamma_u_val, beta_u_val in all_configs]):
+                                                 for n_val, rho_val, p01y_val, gamma_u_val, beta_u_val in all_configs]):
             if config_id in generated_files:
                 for local_path in generated_files[config_id]:
                     # Extract run_id from filename (handle .pkl.gz extension)
@@ -752,7 +706,8 @@ class DatasetGenerator:
                 if success:
                     # Clean up local file after successful upload
                     os.remove(local_path)
-                    logger.info(f"Uploaded config_{config_id}_run_{run_id} ({file_size/1024:.1f}KB) in {upload_time:.2f}s")
+                    logger.info(
+                        f"Uploaded config_{config_id}_run_{run_id} ({file_size / 1024:.1f}KB) in {upload_time:.2f}s")
                     return config_id, True
                 else:
                     logger.error(f"Failed to upload config_{config_id}_run_{run_id} after {upload_time:.2f}s")
@@ -779,7 +734,7 @@ class DatasetGenerator:
 
         # Update manifest and log results
         for config_id, config_info in enumerate([(n_val, rho_val, p01y_val, gamma_u_val, beta_u_val)
-                                                for n_val, rho_val, p01y_val, gamma_u_val, beta_u_val in all_configs]):
+                                                 for n_val, rho_val, p01y_val, gamma_u_val, beta_u_val in all_configs]):
             n_val, rho_val, p01y_val, gamma_u_val, beta_u_val = config_info
             config_params = {
                 'n': n_val,
@@ -848,7 +803,7 @@ class AsyncWorker:
         self.processed_count = 0
 
     async def process_single_dataset(self, task: Dict) -> Dict:
-        """Process a single dataset task"""
+        """Process a single dataset task with nested parallelism"""
         config_id = task['config_id']
         run_id = task['run_id']
         s3_key = task['s3_key']
@@ -860,7 +815,6 @@ class AsyncWorker:
             # Download dataset
             logger.info(f"Worker {self.worker_id}: Downloading {s3_key}")
             success = await self.s3_manager.download_object(s3_key, local_dataset_path, decompress=True)
-
             if not success:
                 raise Exception(f"Failed to download dataset {s3_key}")
 
@@ -873,28 +827,36 @@ class AsyncWorker:
             df_y = dataset['df_y']
             logger.info(f"Worker {self.worker_id}: Dataset loaded, df_x shape: {df_x.shape}, df_y shape: {df_y.shape}")
 
-            # Run NN ensemble (2 models for testing)
+            # --- NN Ensemble ---
             logger.info(
-                f"Worker {self.worker_id}: Starting NN ensemble ({self.config.ENSEMBLE_SIZE} models) for {s3_key}")
+                f"Worker {self.worker_id}: Starting NN ensemble "
+                f"({self.config.ENSEMBLE_SIZE} models, {self.config.MAX_INNER_WORKERS} inner workers) for {s3_key}"
+            )
             try:
                 sps_nn, sri_nn, naive_nn = await ensemble_nn(
                     df_x, df_y, self.config.ENSEMBLE_SIZE,
+                    max_workers=self.config.MAX_INNER_WORKERS,  # NEW
                     epochs=self.config.EPOCHS,
                     lr=self.config.LEARNING_RATE,
                     dropout=self.config.DROPOUT
                 )
                 logger.info(
-                    f"Worker {self.worker_id}: NN ensemble completed: sps={sps_nn}, sri={sri_nn}, naive={naive_nn}")
+                    f"Worker {self.worker_id}: NN ensemble completed: "
+                    f"sps={sps_nn}, sri={sri_nn}, naive={naive_nn}"
+                )
             except Exception as e:
                 logger.error(f"Worker {self.worker_id}: NN ensemble failed: {e}")
                 raise
 
-            # Run bootstrap CI for NN ensemble estimates (5 bootstrap samples for testing)
+            # --- NN Bootstrap ---
             logger.info(
-                f"Worker {self.worker_id}: Starting NN bootstrap CI ({self.config.BOOTSTRAPS} samples) for {s3_key}")
+                f"Worker {self.worker_id}: Starting NN bootstrap CI "
+                f"({self.config.BOOTSTRAPS} samples, {self.config.MAX_INNER_WORKERS} inner workers) for {s3_key}"
+            )
             try:
                 sps_ci, sri_ci, naive_ci = await bootstrap_ci_ensemble(
                     (sps_nn, sri_nn, naive_nn), df_x, df_y, self.config.BOOTSTRAPS,
+                    max_workers=self.config.MAX_INNER_WORKERS,  # NEW
                     epochs=self.config.EPOCHS,
                     lr=self.config.LEARNING_RATE,
                     dropout=self.config.DROPOUT
@@ -904,19 +866,21 @@ class AsyncWorker:
                 logger.error(f"Worker {self.worker_id}: NN bootstrap CI failed: {e}")
                 raise
 
-            # Run bootstrap for linear models (5 bootstrap samples for testing)
+            # --- Linear Models ---
             logger.info(f"Worker {self.worker_id}: Starting linear model analysis for {s3_key}")
             try:
                 ols_point = run_naive_ols(df_y)
                 logger.info(f"Worker {self.worker_id}: OLS completed: {ols_point}")
 
                 sls_point, (sls_low, sls_high) = await bootstrap_ci(
-                    run_2sps, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL
+                    run_2sps, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL,
+                    max_workers=self.config.MAX_INNER_WORKERS  # NEW
                 )
                 logger.info(f"Worker {self.worker_id}: 2SPS bootstrap completed: {sls_point}")
 
                 sri_point, (sri_low, sri_high) = await bootstrap_ci(
-                    run_2sri, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL
+                    run_2sri, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL,
+                    max_workers=self.config.MAX_INNER_WORKERS  # NEW
                 )
                 logger.info(f"Worker {self.worker_id}: 2SRI bootstrap completed: {sri_point}")
             except Exception as e:
@@ -948,7 +912,7 @@ class AsyncWorker:
                 'params': dataset['params']
             }
 
-            # Convert results to JSON-serializable format and upload
+            # Upload results
             results = convert_to_json_serializable(results)
             result_s3_key = f"results/config_{config_id}/run_{run_id}_results.json"
             await self.s3_manager.put_json(results, result_s3_key)
@@ -962,7 +926,6 @@ class AsyncWorker:
 
         except Exception as e:
             logger.error(f"Worker {self.worker_id}: Failed to process {s3_key}: {e}")
-            # Cleanup on error
             if os.path.exists(local_dataset_path):
                 os.remove(local_dataset_path)
             return None
@@ -1057,7 +1020,7 @@ class ParallelExecutor:
 
             # Create workers
             workers = []
-            for worker_id in range(self.config.MAX_WORKERS):
+            for worker_id in range(self.config.MAX_OUTER_WORKERS):  # << use outer workers
                 worker = AsyncWorker(worker_id, self.config, s3_manager)
                 workers.append(worker)
 
