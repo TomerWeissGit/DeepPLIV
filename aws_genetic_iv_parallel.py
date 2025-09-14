@@ -33,6 +33,7 @@ from botocore.exceptions import NoCredentialsError
 
 # Local imports
 from core.trainer import DeepPLIV
+import torch
 
 
 # Configuration
@@ -125,6 +126,28 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# GPU setup
+def setup_gpu():
+    """Configure GPU device and log GPU information"""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        gpu_count = torch.cuda.device_count()
+        logger.info(f"GPU available: {torch.cuda.get_device_name(0)}")
+        logger.info(f"GPU count: {gpu_count}")
+        logger.info(f"Current GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+
+        # Set memory growth to avoid OOM
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+
+        return device
+    else:
+        logger.warning("GPU not available, using CPU")
+        return torch.device("cpu")
+
+# Global device variable
+DEVICE = setup_gpu()
 
 # Global parameters (loaded from pickle)
 gamma_j1 = None
@@ -335,9 +358,122 @@ def run_2sri(df_x, df_y):
     return sm.OLS(df_y["Y"], X_stk).fit().params.iloc[1]
 
 
+class GPUOptimizedDeepPLIV:
+    """GPU-optimized version of DeepPLIV with device management"""
+
+    def __init__(self, device=None):
+        self.device = device or DEVICE
+        self.first_stage_model = None
+        self.second_stage_model = None
+
+    def fit_first_stage_gpu(self, z_train, v_train, z_val, v_val, epochs, lr, dropout):
+        """GPU-optimized first stage training"""
+        from models.first_stage import NeuralNetworkFirstStage
+
+        # Move data to GPU
+        z_train_tensor = torch.tensor(z_train, dtype=torch.float32, device=self.device)
+        v_train_tensor = torch.tensor(v_train, dtype=torch.float32, device=self.device).view(-1, 1)
+        z_val_tensor = torch.tensor(z_val, dtype=torch.float32, device=self.device)
+        v_val_tensor = torch.tensor(v_val, dtype=torch.float32, device=self.device).view(-1, 1)
+
+        # Initialize model on GPU
+        self.first_stage_model = NeuralNetworkFirstStage(
+            input_dim=z_train.shape[1],
+            output_dim=1,
+            dropout=dropout
+        ).to(self.device)
+
+        # Custom GPU training loop
+        optimizer = torch.optim.Adam(self.first_stage_model.parameters(), lr=lr, weight_decay=0.001)
+        criterion = torch.nn.MSELoss()
+
+        self.first_stage_model.train()
+        best_val_loss = float('inf')
+        patience_counter = 0
+        patience = int(np.sqrt(epochs))
+
+        for epoch in range(epochs):
+            # Training
+            optimizer.zero_grad()
+            outputs = self.first_stage_model(z_train_tensor)
+            loss = criterion(outputs, v_train_tensor)
+            loss.backward()
+            optimizer.step()
+
+            # Validation
+            if epoch % 10 == 0:
+                self.first_stage_model.eval()
+                with torch.no_grad():
+                    val_outputs = self.first_stage_model(z_val_tensor)
+                    val_loss = criterion(val_outputs, v_val_tensor)
+
+                if val_loss.item() < best_val_loss:
+                    best_val_loss = val_loss.item()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= patience:
+                    break
+
+                self.first_stage_model.train()
+
+        return self.first_stage_model
+
+    def predict_first_stage_gpu(self, z_new):
+        """GPU-optimized first stage prediction"""
+        self.first_stage_model.eval()
+        with torch.no_grad():
+            z_tensor = torch.tensor(z_new, dtype=torch.float32, device=self.device)
+            predictions = self.first_stage_model(z_tensor)
+            return predictions.cpu().numpy()
+
+    def fit_second_stage_gpu(self, v_input, x_input, y_target, epochs, lr, dropout):
+        """GPU-optimized second stage training"""
+        from models.second_stage import NeuralNetworkSecondStage
+
+        # Move data to GPU
+        v_tensor = torch.tensor(v_input, dtype=torch.float32, device=self.device)
+        x_tensor = torch.tensor(x_input, dtype=torch.float32, device=self.device)
+        y_tensor = torch.tensor(y_target, dtype=torch.float32, device=self.device).view(-1, 1)
+
+        # Initialize model on GPU
+        model = NeuralNetworkSecondStage(
+            x=x_input.shape[1],
+            v=v_input.shape[1],
+            dropout=dropout
+        ).to(self.device)
+
+        # Custom GPU training loop
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        criterion = torch.nn.MSELoss()
+
+        model.train()
+        best_loss = float('inf')
+        patience_counter = 0
+        patience = int(np.sqrt(epochs))
+
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = model(x_tensor, v_tensor)
+            loss = criterion(outputs, y_tensor)
+            loss.backward()
+            optimizer.step()
+
+            if epoch % 10 == 0 and loss.item() < best_loss:
+                best_loss = loss.item()
+                patience_counter = 0
+            elif epoch % 10 == 0:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                break
+
+        return model
+
 def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
-    """Single NN estimation - memory optimized version"""
-    model = DeepPLIV()
+    """GPU-optimized NN estimation with proper memory management"""
+    gpu_model = GPUOptimizedDeepPLIV(device=DEVICE)
 
     Z_X = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
     Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
@@ -348,44 +484,47 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
     dummy1 = np.ones((X_Y.shape[0], 1))
 
     try:
-        # First stage
-        model.fit_first_stage(Z_X, X, epochs_first_stage=epochs,
-                              learning_rate_first_stage=lr,
-                              dropout=dropout,
-                              validation_data=(Z_Y, X_Y))
+        # First stage training with GPU
+        gpu_model.fit_first_stage_gpu(Z_X, X, Z_Y, X_Y, epochs, lr, dropout)
 
-        x_pred = model.first_stage_model.predict(Z_Y).reshape(-1, 1)
+        # First stage prediction
+        x_pred = gpu_model.predict_first_stage_gpu(Z_Y).reshape(-1, 1)
         x_err = X_Y.reshape(-1, 1) - x_pred
 
-        # Second stage models
-        m_sri = model.fit_second_stage(X_Y.reshape(-1, 1), x_err, Y.reshape(-1, 1),
-                                       epochs_second_stage=epochs, learning_rate_second_stage=lr,
-                                       dropout=dropout)
-
-        m_sps = model.fit_second_stage(x_pred, dummy1, Y.reshape(-1, 1),
-                                       epochs_second_stage=epochs, learning_rate_second_stage=lr,
-                                       dropout=dropout)
-
-        m_naive_feed_forward = model.fit_second_stage(X_Y.reshape(-1, 1), dummy1, Y.reshape(-1, 1),
-                                                      epochs_second_stage=epochs, learning_rate_second_stage=lr,
-                                                      dropout=dropout)
-
-        results = (
-            m_sps.final_layer.weight.detach().numpy()[0, 0],
-            m_sri.final_layer.weight.detach().numpy()[0, 0],
-            m_naive_feed_forward.final_layer.weight.detach().numpy()[0, 0]
+        # Second stage models with GPU
+        m_sri = gpu_model.fit_second_stage_gpu(
+            X_Y.reshape(-1, 1), x_err, Y.reshape(-1, 1), epochs, lr, dropout
         )
 
-        # Explicit cleanup
-        del model, m_sri, m_sps, m_naive_feed_forward
-        import torch
+        m_sps = gpu_model.fit_second_stage_gpu(
+            x_pred, dummy1, Y.reshape(-1, 1), epochs, lr, dropout
+        )
+
+        m_naive_feed_forward = gpu_model.fit_second_stage_gpu(
+            X_Y.reshape(-1, 1), dummy1, Y.reshape(-1, 1), epochs, lr, dropout
+        )
+
+        # Extract results and move to CPU
+        results = (
+            m_sps.final_layer.weight.detach().cpu().numpy()[0, 0],
+            m_sri.final_layer.weight.detach().cpu().numpy()[0, 0],
+            m_naive_feed_forward.final_layer.weight.detach().cpu().numpy()[0, 0]
+        )
+
+        # Explicit cleanup and GPU memory management
+        del gpu_model, m_sri, m_sps, m_naive_feed_forward
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
         return results
 
     except Exception as e:
-        logger.error(f"NN estimation failed: {e}")
+        logger.error(f"GPU NN estimation failed: {e}")
+        # Emergency cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         return None, None, None
 
 
@@ -793,14 +932,27 @@ def convert_to_json_serializable(obj):
     return obj
 
 
+def log_gpu_memory():
+    """Log current GPU memory usage"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        logger.info(f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
 class AsyncWorker:
-    """Individual worker for processing datasets"""
+    """Individual worker for processing datasets with GPU monitoring"""
 
     def __init__(self, worker_id: int, config: Config, s3_manager: S3Manager):
         self.worker_id = worker_id
         self.config = config
         self.s3_manager = s3_manager
         self.processed_count = 0
+
+        # Log GPU status for this worker
+        if torch.cuda.is_available():
+            logger.info(f"Worker {worker_id}: GPU device available - {torch.cuda.get_device_name(0)}")
+        else:
+            logger.info(f"Worker {worker_id}: Using CPU")
 
     async def process_single_dataset(self, task: Dict) -> Dict:
         """Process a single dataset task with nested parallelism"""
@@ -832,6 +984,9 @@ class AsyncWorker:
                 f"Worker {self.worker_id}: Starting NN ensemble "
                 f"({self.config.ENSEMBLE_SIZE} models, {self.config.MAX_INNER_WORKERS} inner workers) for {s3_key}"
             )
+            # Log initial GPU memory
+            log_gpu_memory()
+
             try:
                 sps_nn, sri_nn, naive_nn = await ensemble_nn(
                     df_x, df_y, self.config.ENSEMBLE_SIZE,
@@ -844,8 +999,14 @@ class AsyncWorker:
                     f"Worker {self.worker_id}: NN ensemble completed: "
                     f"sps={sps_nn}, sri={sri_nn}, naive={naive_nn}"
                 )
+                # Log GPU memory after ensemble
+                log_gpu_memory()
             except Exception as e:
                 logger.error(f"Worker {self.worker_id}: NN ensemble failed: {e}")
+                # Force GPU cleanup on error
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
                 raise
 
             # --- NN Bootstrap ---
@@ -862,8 +1023,14 @@ class AsyncWorker:
                     dropout=self.config.DROPOUT
                 )
                 logger.info(f"Worker {self.worker_id}: NN bootstrap CI completed")
+                # Log GPU memory after bootstrap
+                log_gpu_memory()
             except Exception as e:
                 logger.error(f"Worker {self.worker_id}: NN bootstrap CI failed: {e}")
+                # Force GPU cleanup on error
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
                 raise
 
             # --- Linear Models ---
@@ -917,17 +1084,27 @@ class AsyncWorker:
             result_s3_key = f"results/config_{config_id}/run_{run_id}_results.json"
             await self.s3_manager.put_json(results, result_s3_key)
 
-            # Cleanup
+            # Cleanup with final GPU memory check
             os.remove(local_dataset_path)
             self.processed_count += 1
+
+            # Final GPU cleanup and memory log
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                log_gpu_memory()
 
             logger.info(f"Worker {self.worker_id}: Completed {s3_key} ({self.processed_count} total)")
             return results
 
         except Exception as e:
             logger.error(f"Worker {self.worker_id}: Failed to process {s3_key}: {e}")
+            # Emergency cleanup
             if os.path.exists(local_dataset_path):
                 os.remove(local_dataset_path)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             return None
 
 
@@ -1125,6 +1302,20 @@ if __name__ == "__main__":
     except NoCredentialsError:
         logger.error("AWS credentials not found. Please configure them.")
         sys.exit(1)
+
+    # Log final GPU configuration
+    if torch.cuda.is_available():
+        logger.info("="*60)
+        logger.info("GPU CONFIGURATION")
+        logger.info("="*60)
+        logger.info(f"Device: {torch.cuda.get_device_name(0)}")
+        logger.info(f"GPU Count: {torch.cuda.device_count()}")
+        logger.info(f"Total Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        logger.info(f"PyTorch Version: {torch.__version__}")
+        logger.info(f"CUDA Version: {torch.version.cuda}")
+        logger.info("="*60)
+    else:
+        logger.warning("No GPU available - running on CPU")
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "generate":
