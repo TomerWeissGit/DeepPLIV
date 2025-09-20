@@ -32,9 +32,8 @@ echo "Installing required system packages..."
 sudo apt update -q
 sudo apt install -y python3-pip
 
-# Install requirements globally
+# Install requirements globally (override Ubuntu 24.04 protection)
 echo "Installing Python requirements..."
-pip3 install --upgrade pip
 pip3 install -r requirements.txt
 
 # Copy service file to systemd directory (requires sudo)
