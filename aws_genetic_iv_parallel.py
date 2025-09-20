@@ -842,73 +842,69 @@ class DatasetGenerator:
                 total_size += size
         logger.info(f"Total data to upload: {total_size / 1024 / 1024:.2f} MB")
 
-        # Upload all files in parallel
+        # Upload all files in parallel using semaphore for concurrency control
         uploaded_files = {}  # config_id -> count
         failed_uploads = []
         upload_start_time = datetime.now()
 
+        # Create semaphore to limit concurrent uploads
+        max_concurrent_uploads = 20  # Reduced from 50 to be more conservative
+        upload_semaphore = asyncio.Semaphore(max_concurrent_uploads)
+
         async def upload_single_file(local_path, s3_key, config_id, run_id):
-            file_start = datetime.now()
-            try:
-                # Get file size for logging
-                file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            async with upload_semaphore:  # Acquire semaphore for concurrency control
+                file_start = datetime.now()
+                try:
+                    # Get file size for logging
+                    file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
 
-                # Don't double-compress if file is already compressed
-                compress = not s3_key.endswith('.gz')
-                success = await self.s3_manager.upload_object(local_path, s3_key, compress=compress)
+                    # Don't double-compress if file is already compressed
+                    compress = not s3_key.endswith('.gz')
+                    success = await self.s3_manager.upload_object(local_path, s3_key, compress=compress)
 
-                upload_time = (datetime.now() - file_start).total_seconds()
+                    upload_time = (datetime.now() - file_start).total_seconds()
 
-                if success:
-                    # Clean up local file after successful upload
-                    os.remove(local_path)
-                    logger.info(
-                        f"Uploaded config_{config_id}_run_{run_id} ({file_size / 1024:.1f}KB) in {upload_time:.2f}s")
-                    return config_id, True
-                else:
-                    logger.error(f"Failed to upload config_{config_id}_run_{run_id} after {upload_time:.2f}s")
+                    if success:
+                        # Clean up local file after successful upload
+                        os.remove(local_path)
+                        logger.info(
+                            f"Uploaded config_{config_id}_run_{run_id} ({file_size / 1024:.1f}KB) in {upload_time:.2f}s")
+                        return config_id, True
+                    else:
+                        logger.error(f"Failed to upload config_{config_id}_run_{run_id} after {upload_time:.2f}s")
+                        failed_uploads.append((config_id, run_id, s3_key))
+                        return config_id, False
+                except Exception as e:
+                    upload_time = (datetime.now() - file_start).total_seconds()
+                    logger.error(f"Exception uploading {local_path} to {s3_key} after {upload_time:.2f}s: {e}")
                     failed_uploads.append((config_id, run_id, s3_key))
                     return config_id, False
-            except Exception as e:
-                upload_time = (datetime.now() - file_start).total_seconds()
-                logger.error(f"Exception uploading {local_path} to {s3_key} after {upload_time:.2f}s: {e}")
-                failed_uploads.append((config_id, run_id, s3_key))
-                return config_id, False
 
-        # Execute uploads with limited concurrency to prevent task overload
-        async def run_upload_batch(batch):
-            tasks = [
-                asyncio.create_task(upload_single_file(local_path, s3_key, config_id, run_id))
-                for local_path, s3_key, config_id, run_id in batch
-            ]
-            try:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                return results
-            except Exception as e:
-                # Cancel remaining tasks if there's an error
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                # Wait for all tasks to complete cancellation
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise e
+        # Process all uploads using asyncio.gather() without manual task creation
+        logger.info(f"Starting concurrent upload of {len(upload_tasks)} files (max {max_concurrent_uploads} concurrent)...")
 
-        # Process uploads in batches to prevent too many concurrent tasks
-        batch_size = 50  # Limit concurrent uploads
-        upload_results = []
+        upload_coroutines = [
+            upload_single_file(local_path, s3_key, config_id, run_id)
+            for local_path, s3_key, config_id, run_id in upload_tasks
+        ]
 
-        for i in range(0, len(upload_tasks), batch_size):
-            batch = upload_tasks[i:i + batch_size]
-            logger.info(f"Processing upload batch {i//batch_size + 1}/{(len(upload_tasks) + batch_size - 1)//batch_size}")
-            batch_results = await run_upload_batch(batch)
-            upload_results.extend(batch_results)
+        # Use asyncio.gather() directly with coroutines (not tasks)
+        upload_results = await asyncio.gather(*upload_coroutines, return_exceptions=True)
 
-        # Count successful uploads per config
-        for config_id, success in upload_results:
-            if config_id not in uploaded_files:
-                uploaded_files[config_id] = 0
-            if success:
-                uploaded_files[config_id] += 1
+        # Count successful uploads per config (handle exceptions from gather)
+        for result in upload_results:
+            if isinstance(result, Exception):
+                # Log the exception but continue processing
+                logger.error(f"Upload failed with exception: {result}")
+                continue
+            elif isinstance(result, tuple) and len(result) == 2:
+                config_id, success = result
+                if config_id not in uploaded_files:
+                    uploaded_files[config_id] = 0
+                if success:
+                    uploaded_files[config_id] += 1
+            else:
+                logger.warning(f"Unexpected upload result format: {result}")
 
         # Update manifest and log results
         for config_id, config_info in enumerate([(n_val, rho_val, p01y_val, gamma_u_val, beta_u_val)
