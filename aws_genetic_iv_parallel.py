@@ -186,6 +186,7 @@ class S3Manager:
         self.region = region
         self.base_path = base_path
         self.session = None
+        self._active_tasks = set()
 
     async def __aenter__(self):
         self.session = aioboto3.Session()
@@ -193,6 +194,12 @@ class S3Manager:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Wait for all active upload tasks to complete before closing
+        if self._active_tasks:
+            logger.info(f"Waiting for {len(self._active_tasks)} active S3 operations to complete...")
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
+            logger.info("All S3 operations completed. Closing session.")
+
         await self.s3_client.__aexit__(exc_type, exc_val, exc_tb)
 
     def _get_s3_key(self, relative_path: str) -> str:
@@ -200,7 +207,10 @@ class S3Manager:
         return f"{self.base_path}/{relative_path}"
 
     async def upload_object(self, local_path: str, s3_key: str, compress: bool = True) -> bool:
-        """Upload object to S3 with optional compression"""
+        """Upload object to S3 with optional compression and task tracking"""
+        task = asyncio.current_task()
+        self._active_tasks.add(task)
+
         try:
             full_key = self._get_s3_key(s3_key)
 
@@ -223,6 +233,9 @@ class S3Manager:
         except Exception as e:
             logger.error(f"Failed to upload {s3_key}: {e}")
             return False
+        finally:
+            # Remove task from active set when done
+            self._active_tasks.discard(task)
 
     async def download_object(self, s3_key: str, local_path: str, decompress: bool = True) -> bool:
         """Download object from S3 with optional decompression"""
@@ -282,7 +295,10 @@ class S3Manager:
             return []
 
     async def put_json(self, data: Dict, s3_key: str) -> bool:
-        """Upload JSON data to S3"""
+        """Upload JSON data to S3 with task tracking"""
+        task = asyncio.current_task()
+        self._active_tasks.add(task)
+
         try:
             full_key = self._get_s3_key(s3_key)
             json_data = json.dumps(data, indent=2)
@@ -297,6 +313,9 @@ class S3Manager:
         except Exception as e:
             logger.error(f"Failed to upload JSON {s3_key}: {e}")
             return False
+        finally:
+            # Remove task from active set when done
+            self._active_tasks.discard(task)
 
     async def get_json(self, s3_key: str) -> Optional[Dict]:
         """Download JSON data from S3"""
@@ -875,12 +894,33 @@ class DatasetGenerator:
                 failed_uploads.append((config_id, run_id, s3_key))
                 return config_id, False
 
-        # Execute all uploads concurrently
-        upload_tasks_coroutines = [
-            upload_single_file(local_path, s3_key, config_id, run_id)
-            for local_path, s3_key, config_id, run_id in upload_tasks
-        ]
-        upload_results = await asyncio.gather(*upload_tasks_coroutines)
+        # Execute uploads with limited concurrency to prevent task overload
+        async def run_upload_batch(batch):
+            tasks = [
+                asyncio.create_task(upload_single_file(local_path, s3_key, config_id, run_id))
+                for local_path, s3_key, config_id, run_id in batch
+            ]
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                return results
+            except Exception as e:
+                # Cancel remaining tasks if there's an error
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                # Wait for all tasks to complete cancellation
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise e
+
+        # Process uploads in batches to prevent too many concurrent tasks
+        batch_size = 50  # Limit concurrent uploads
+        upload_results = []
+
+        for i in range(0, len(upload_tasks), batch_size):
+            batch = upload_tasks[i:i + batch_size]
+            logger.info(f"Processing upload batch {i//batch_size + 1}/{(len(upload_tasks) + batch_size - 1)//batch_size}")
+            batch_results = await run_upload_batch(batch)
+            upload_results.extend(batch_results)
 
         # Count successful uploads per config
         for config_id, success in upload_results:
