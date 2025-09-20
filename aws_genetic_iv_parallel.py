@@ -574,7 +574,7 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
 
 
 async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
-    """Async ensemble NN estimation with capped inner workers"""
+    """Async ensemble NN estimation with capped inner workers - returns both means and individual estimates"""
     loop = asyncio.get_event_loop()
 
     def run_single_nn():
@@ -586,17 +586,19 @@ async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
 
     valid_results = [r for r in results if r[0] is not None]
     if not valid_results:
-        return None, None, None
+        return None, None, None, [], [], []
 
     sps_list = [r[0] for r in valid_results]
     sri_list = [r[1] for r in valid_results]
     naive_list = [r[2] for r in valid_results]
 
-    return np.mean(sps_list), np.mean(sri_list), np.mean(naive_list)
+    # Return both aggregated means and individual estimates
+    return (np.mean(sps_list), np.mean(sri_list), np.mean(naive_list),
+            sps_list, sri_list, naive_list)
 
 
 async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
-    """Parallel bootstrap CI with capped inner workers"""
+    """Parallel bootstrap CI with capped inner workers - returns mean, CI, and individual estimates"""
     loop = asyncio.get_event_loop()
     n_x, n_y = len(df_x), len(df_y)
 
@@ -610,11 +612,11 @@ async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
         estimates = await asyncio.gather(*tasks)
 
     ci_low, ci_high = np.percentile(estimates, ci_level)
-    return np.mean(estimates), (ci_low, ci_high)
+    return np.mean(estimates), (ci_low, ci_high), estimates
 
 
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, **nn_kwargs):
-    """Parallel bootstrap CI for ensemble NN with capped inner workers"""
+    """Parallel bootstrap CI for ensemble NN with capped inner workers - returns CIs and individual estimates"""
     sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
     n_x, n_y = len(df_x), len(df_y)
 
@@ -628,6 +630,9 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
             df_x_boot, df_y_boot, **nn_kwargs
         )
         return (
+            sps_boot if sps_boot else None,
+            sri_boot if sri_boot else None,
+            naive_boot if naive_boot else None,
             abs(sps_boot - sps_ensemble) if sps_boot else 0,
             abs(sri_boot - sri_ensemble) if sri_boot else 0,
             abs(naive_boot - naive_ensemble) if naive_boot else 0,
@@ -637,7 +642,14 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
         tasks = [executor.submit(bootstrap_single_sample) for _ in range(B)]
         results = [t.result() for t in tasks]
 
-    sps_errors, sri_errors, naive_errors = zip(*results)
+    # Extract individual estimates and errors
+    sps_estimates = [r[0] for r in results if r[0] is not None]
+    sri_estimates = [r[1] for r in results if r[1] is not None]
+    naive_estimates = [r[2] for r in results if r[2] is not None]
+
+    sps_errors = [r[3] for r in results]
+    sri_errors = [r[4] for r in results]
+    naive_errors = [r[5] for r in results]
 
     sps_ci = (sps_ensemble - np.percentile(sps_errors, 95),
               sps_ensemble + np.percentile(sps_errors, 95))
@@ -646,7 +658,8 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
     naive_ci = (naive_ensemble - np.percentile(naive_errors, 95),
                 naive_ensemble + np.percentile(naive_errors, 95))
 
-    return sps_ci, sri_ci, naive_ci
+    return (sps_ci, sri_ci, naive_ci,
+            sps_estimates, sri_estimates, naive_estimates)
 
 
 logger = logging.getLogger(__name__)
@@ -1003,6 +1016,54 @@ def convert_to_json_serializable(obj):
     return obj
 
 
+def create_estimates_csv(estimates_dict: Dict, config_id: int, run_id: int, worker_id: int,
+                        estimation_type: str) -> str:
+    """Create CSV content from individual estimates"""
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write header
+    writer.writerow(['estimate_id', 'model_type', 'estimate_value', 'config_id', 'run_id',
+                     'worker_id', 'estimation_type', 'timestamp'])
+
+    timestamp = datetime.now().isoformat()
+
+    # Write data rows
+    for model_type, estimates in estimates_dict.items():
+        for i, estimate in enumerate(estimates):
+            if estimate is not None:
+                writer.writerow([i+1, model_type, float(estimate), config_id, run_id,
+                               worker_id, estimation_type, timestamp])
+
+    return output.getvalue()
+
+
+async def save_estimates_csv(s3_manager, csv_content: str, s3_key: str) -> bool:
+    """Save CSV content to S3"""
+    try:
+        # Save to temporary file first
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write(csv_content)
+            temp_path = f.name
+
+        # Upload to S3
+        success = await s3_manager.upload_object(temp_path, s3_key, compress=True)
+
+        # Clean up temporary file
+        os.remove(temp_path)
+
+        return success
+    except Exception as e:
+        logger.error(f"Failed to save CSV to S3 {s3_key}: {e}")
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+        return False
+
+
 def log_gpu_memory():
     """Log current GPU memory usage"""
     if torch.cuda.is_available():
@@ -1059,7 +1120,7 @@ class AsyncWorker:
             log_gpu_memory()
 
             try:
-                sps_nn, sri_nn, naive_nn = await ensemble_nn(
+                sps_nn, sri_nn, naive_nn, sps_raw, sri_raw, naive_raw = await ensemble_nn(
                     df_x, df_y, self.config.ENSEMBLE_SIZE,
                     max_workers=self.config.MAX_INNER_WORKERS,  # NEW
                     epochs=self.config.EPOCHS,
@@ -1070,6 +1131,20 @@ class AsyncWorker:
                     f"Worker {self.worker_id}: NN ensemble completed: "
                     f"sps={sps_nn}, sri={sri_nn}, naive={naive_nn}"
                 )
+
+                # Save raw ensemble estimates to CSV
+                ensemble_estimates = {
+                    'nn_2sps': sps_raw,
+                    'nn_2sri': sri_raw,
+                    'naive_nn': naive_raw
+                }
+                ensemble_csv = create_estimates_csv(
+                    ensemble_estimates, config_id, run_id, self.worker_id, 'ensemble'
+                )
+                ensemble_s3_key = f"raw_estimates/config_{config_id}/run_{run_id}_ensemble.csv"
+                await save_estimates_csv(self.s3_manager, ensemble_csv, ensemble_s3_key)
+                logger.info(f"Worker {self.worker_id}: Saved {len(sps_raw)} ensemble estimates to {ensemble_s3_key}")
+
                 # Log GPU memory after ensemble
                 log_gpu_memory()
             except Exception as e:
@@ -1086,7 +1161,7 @@ class AsyncWorker:
                 f"({self.config.BOOTSTRAPS} samples, {self.config.MAX_INNER_WORKERS} inner workers) for {s3_key}"
             )
             try:
-                sps_ci, sri_ci, naive_ci = await bootstrap_ci_ensemble(
+                sps_ci, sri_ci, naive_ci, sps_boot_raw, sri_boot_raw, naive_boot_raw = await bootstrap_ci_ensemble(
                     (sps_nn, sri_nn, naive_nn), df_x, df_y, self.config.BOOTSTRAPS,
                     max_workers=self.config.MAX_INNER_WORKERS,  # NEW
                     epochs=self.config.EPOCHS,
@@ -1094,6 +1169,20 @@ class AsyncWorker:
                     dropout=self.config.DROPOUT
                 )
                 logger.info(f"Worker {self.worker_id}: NN bootstrap CI completed")
+
+                # Save raw bootstrap ensemble estimates to CSV
+                bootstrap_ensemble_estimates = {
+                    'nn_2sps': sps_boot_raw,
+                    'nn_2sri': sri_boot_raw,
+                    'naive_nn': naive_boot_raw
+                }
+                bootstrap_ensemble_csv = create_estimates_csv(
+                    bootstrap_ensemble_estimates, config_id, run_id, self.worker_id, 'bootstrap_ensemble'
+                )
+                bootstrap_ensemble_s3_key = f"raw_estimates/config_{config_id}/run_{run_id}_bootstrap_ensemble.csv"
+                await save_estimates_csv(self.s3_manager, bootstrap_ensemble_csv, bootstrap_ensemble_s3_key)
+                logger.info(f"Worker {self.worker_id}: Saved {len(sps_boot_raw)} bootstrap ensemble estimates to {bootstrap_ensemble_s3_key}")
+
                 # Log GPU memory after bootstrap
                 log_gpu_memory()
             except Exception as e:
@@ -1110,17 +1199,35 @@ class AsyncWorker:
                 ols_point = run_naive_ols(df_y)
                 logger.info(f"Worker {self.worker_id}: OLS completed: {ols_point}")
 
-                sls_point, (sls_low, sls_high) = await bootstrap_ci(
+                sls_point, (sls_low, sls_high), sls_boot_raw = await bootstrap_ci(
                     run_2sps, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL,
                     max_workers=self.config.MAX_INNER_WORKERS  # NEW
                 )
                 logger.info(f"Worker {self.worker_id}: 2SPS bootstrap completed: {sls_point}")
 
-                sri_point, (sri_low, sri_high) = await bootstrap_ci(
+                # Save raw 2SPS bootstrap estimates
+                bootstrap_2sps_estimates = {'iv_2sps': sls_boot_raw}
+                bootstrap_2sps_csv = create_estimates_csv(
+                    bootstrap_2sps_estimates, config_id, run_id, self.worker_id, 'bootstrap_2sps'
+                )
+                bootstrap_2sps_s3_key = f"raw_estimates/config_{config_id}/run_{run_id}_bootstrap_2sps.csv"
+                await save_estimates_csv(self.s3_manager, bootstrap_2sps_csv, bootstrap_2sps_s3_key)
+                logger.info(f"Worker {self.worker_id}: Saved {len(sls_boot_raw)} 2SPS bootstrap estimates to {bootstrap_2sps_s3_key}")
+
+                sri_point, (sri_low, sri_high), sri_boot_raw = await bootstrap_ci(
                     run_2sri, df_x, df_y, self.config.BOOTSTRAPS, self.config.CI_LEVEL,
                     max_workers=self.config.MAX_INNER_WORKERS  # NEW
                 )
                 logger.info(f"Worker {self.worker_id}: 2SRI bootstrap completed: {sri_point}")
+
+                # Save raw 2SRI bootstrap estimates
+                bootstrap_2sri_estimates = {'iv_2sri': sri_boot_raw}
+                bootstrap_2sri_csv = create_estimates_csv(
+                    bootstrap_2sri_estimates, config_id, run_id, self.worker_id, 'bootstrap_2sri'
+                )
+                bootstrap_2sri_s3_key = f"raw_estimates/config_{config_id}/run_{run_id}_bootstrap_2sri.csv"
+                await save_estimates_csv(self.s3_manager, bootstrap_2sri_csv, bootstrap_2sri_s3_key)
+                logger.info(f"Worker {self.worker_id}: Saved {len(sri_boot_raw)} 2SRI bootstrap estimates to {bootstrap_2sri_s3_key}")
             except Exception as e:
                 logger.error(f"Worker {self.worker_id}: Linear model analysis failed: {e}")
                 raise
