@@ -33,31 +33,14 @@ apt-get update -q
 
 # Install Python3 and pip if not available
 echo "Ensuring Python3 and pip are available..."
-apt-get install -y python3 python3-pip python3-venv
+apt-get install -y python3 python3-pip
 
-# Create virtual environment if it doesn't exist
-VENV_DIR="/home/ubuntu/venv"
-if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment at $VENV_DIR..."
-    python3 -m venv $VENV_DIR
-    chown -R ubuntu:ubuntu $VENV_DIR
-fi
-
-# Activate virtual environment and install requirements
+# Install requirements globally
 echo "Installing Python requirements..."
-sudo -u ubuntu bash << 'EOF'
-source /home/ubuntu/venv/bin/activate
 cd /home/ubuntu/DeepPLIV
-
-# Upgrade pip first
-pip install --upgrade pip
-
-# Install requirements
-echo "Installing packages from requirements.txt..."
-pip install -r requirements.txt
-
-echo "Python environment setup complete!"
-EOF
+pip3 install --upgrade pip
+pip3 install -r requirements.txt
+echo "Python packages installed successfully!"
 
 # Create systemd service for auto-restart
 echo "Setting up systemd service..."

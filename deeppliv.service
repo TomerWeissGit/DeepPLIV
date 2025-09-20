@@ -12,12 +12,12 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/DeepPLIV
 
 # Environment setup
-Environment=PATH=/home/ubuntu/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONPATH=/home/ubuntu/DeepPLIV
 Environment=PYTHONUNBUFFERED=1
 
 # Main execution command
-ExecStart=/home/ubuntu/venv/bin/python aws_genetic_iv_parallel.py execute
+ExecStart=/usr/bin/python3 aws_genetic_iv_parallel.py execute
 
 # Restart configuration for spot instance resilience
 Restart=always

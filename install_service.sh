@@ -27,22 +27,15 @@ fi
 
 echo "Installing DeepPLIV systemd service..."
 
-# Install required packages for virtual environment
+# Install required packages
 echo "Installing required system packages..."
 sudo apt update -q
-sudo apt install -y python3-venv python3-pip
+sudo apt install -y python3-pip
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv $VENV_DIR
-fi
-
-# Install requirements
+# Install requirements globally
 echo "Installing Python requirements..."
-source $VENV_DIR/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+pip3 install --upgrade pip
+pip3 install -r requirements.txt
 
 # Copy service file to systemd directory (requires sudo)
 echo "Installing systemd service file..."
