@@ -44,8 +44,20 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    MAX_OUTER_WORKERS: int = int(os.getenv("MAX_OUTER_WORKERS", "2"))   # datasets in flight
-    MAX_INNER_WORKERS: int = int(os.getenv("MAX_INNER_WORKERS", "16"))  # ensemble/bootstrap jobs
+    # Worker optimization based on CPU cores
+    @property
+    def MAX_OUTER_WORKERS(self) -> int:
+        """Optimize outer workers (datasets in flight) based on CPU cores"""
+        cpu_count = mp.cpu_count()
+        # Use 1/4 of cores for outer workers, minimum 1, maximum 4
+        return max(1, min(4, cpu_count // 4))
+
+    @property
+    def MAX_INNER_WORKERS(self) -> int:
+        """Optimize inner workers (ensemble/bootstrap jobs) based on CPU cores"""
+        cpu_count = mp.cpu_count()
+        # Use 3/4 of cores for inner workers, minimum 2
+        return max(2, (cpu_count * 3) // 4)
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -116,6 +128,7 @@ class Config:
         mode = "LOCAL TESTING" if self.LOCAL_MODE else "FULL AWS"
         logger.info(f"Configuration loaded for {mode} mode")
         logger.info(f"S3 Configuration: Bucket={self.S3_BUCKET}, Path={self.BASE_S3_PATH}, Region={self.AWS_REGION}")
+        logger.info(f"CPU cores: {mp.cpu_count()}, Outer workers: {self.MAX_OUTER_WORKERS}, Inner workers: {self.MAX_INNER_WORKERS}")
         logger.info(
             f"Parameters: ENSEMBLE_SIZE={self.ENSEMBLE_SIZE}, BOOTSTRAPS={self.BOOTSTRAPS}, NUM_SIMULATIONS={self.NUM_SIMULATIONS}, MAX_WORKERS={self.MAX_WORKERS}")
 
@@ -142,8 +155,12 @@ def setup_gpu():
         torch.backends.cudnn.deterministic = False
 
         return device
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        logger.info("Using Apple Metal Performance Shaders (MPS) acceleration")
+        return device
     else:
-        logger.warning("GPU not available, using CPU")
+        logger.warning("No GPU acceleration available, using CPU")
         return torch.device("cpu")
 
 # Global device variable
