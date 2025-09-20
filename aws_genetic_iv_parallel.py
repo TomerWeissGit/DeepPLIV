@@ -48,17 +48,13 @@ class Config:
     # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """Optimize outer workers (datasets in flight) based on CPU cores"""
-        cpu_count = mp.cpu_count()
-        # Use 1/4 of cores for outer workers, minimum 1, maximum 4
-        return max(1, min(4, cpu_count // 4))
+        """Fixed 16 outer workers for high throughput"""
+        return 16
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        """Optimize inner workers (ensemble/bootstrap jobs) based on CPU cores"""
-        cpu_count = mp.cpu_count()
-        # Use 3/4 of cores for inner workers, minimum 2
-        return max(2, (cpu_count * 3) // 4)
+        """Fixed 1 inner worker to minimize memory usage"""
+        return 1
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
