@@ -770,7 +770,7 @@ class DatasetGenerator:
         return uploaded_count
 
     async def generate_all_datasets(self) -> Dict:
-        """Generate all datasets using multiprocessing and upload to S3"""
+        """Generate all datasets using multiprocessing and upload to S3 with checkpoint support"""
         from itertools import product
 
         all_configs = list(product(
@@ -784,11 +784,19 @@ class DatasetGenerator:
         logger.info(
             f"Generating {len(all_configs)} configurations × {self.config.NUM_SIMULATIONS} runs = {len(all_configs) * self.config.NUM_SIMULATIONS} total datasets")
 
+        # Check for existing generation checkpoint
+        generation_checkpoint = await self.s3_manager.get_json('checkpoints/generation_progress.json')
+        completed_datasets = set()
+        if generation_checkpoint:
+            completed_datasets = set(generation_checkpoint.get('completed_datasets', []))
+            logger.info(f"Found existing generation checkpoint with {len(completed_datasets)} completed datasets")
+
         task_manifest = {
             'total_configs': len(all_configs),
             'total_datasets': len(all_configs) * self.config.NUM_SIMULATIONS,
             'configs': {},
-            'generation_timestamp': datetime.now().isoformat()
+            'generation_timestamp': datetime.now().isoformat(),
+            'generation_checkpoint_loaded': len(completed_datasets) > 0
         }
 
         # Process ALL configurations and datasets in parallel
@@ -1281,12 +1289,11 @@ class ParallelExecutor:
 
                         task_queue.task_done()
 
-                        # Periodic checkpoint
-                        if (len(completed_tasks) + len(failed_tasks)) % 10 == 0:
-                            await tracker.save_checkpoint(
-                                checkpoint['completed_tasks'] + completed_tasks,
-                                checkpoint['failed_tasks'] + failed_tasks
-                            )
+                        # Immediate checkpoint after every task
+                        await tracker.save_checkpoint(
+                            checkpoint['completed_tasks'] + completed_tasks,
+                            checkpoint['failed_tasks'] + failed_tasks
+                        )
 
                     except asyncio.TimeoutError:
                         break
