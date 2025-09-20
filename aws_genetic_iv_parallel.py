@@ -28,8 +28,9 @@ from sklearn.linear_model import LinearRegression
 
 # AWS and async dependencies
 import boto3
-import aioboto3
 from botocore.exceptions import NoCredentialsError
+# Remove aioboto3 dependency as it's causing compatibility issues
+# import aioboto3
 
 # Local imports
 from core.trainer import DeepPLIV
@@ -179,142 +180,162 @@ beta_x = 2
 
 
 class S3Manager:
-    """Async S3 operations manager with proper aioboto3 context management"""
+    """S3 operations manager using standard boto3 with async wrapper"""
 
     def __init__(self, bucket_name: str, region: str, base_path: str):
         self.bucket_name = bucket_name
         self.region = region
         self.base_path = base_path
-        self.session = None
         self.s3_client = None
-        self._client_context = None
 
     async def __aenter__(self):
-        # Create session and client context manager properly
-        self.session = aioboto3.Session()
-        self._client_context = self.session.client('s3', region_name=self.region)
-        # Use the context manager properly instead of manual __aenter__()
-        self.s3_client = await self._client_context.__aenter__()
+        # Use standard boto3 client which is more reliable
+        self.s3_client = boto3.client('s3', region_name=self.region)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # Properly close the client context manager
-        if self._client_context:
-            await self._client_context.__aexit__(exc_type, exc_val, exc_tb)
+        # No special cleanup needed for boto3 client
+        pass
 
     def _get_s3_key(self, relative_path: str) -> str:
         """Convert relative path to full S3 key"""
         return f"{self.base_path}/{relative_path}"
 
     async def upload_object(self, local_path: str, s3_key: str, compress: bool = True) -> bool:
-        """Upload object to S3 with optional compression"""
-        try:
-            full_key = self._get_s3_key(s3_key)
+        """Upload object to S3 with optional compression using thread pool"""
+        loop = asyncio.get_event_loop()
 
-            if compress and not s3_key.endswith('.gz'):
-                # Compress data in memory
-                with open(local_path, 'rb') as f:
-                    data = f.read()
-                compressed_data = gzip.compress(data)
-                full_key += '.gz'
+        def _sync_upload():
+            try:
+                full_key = self._get_s3_key(s3_key)
 
-                await self.s3_client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=full_key,
-                    Body=compressed_data
-                )
-            else:
-                await self.s3_client.upload_file(local_path, self.bucket_name, full_key)
+                if compress and not s3_key.endswith('.gz'):
+                    # Compress data in memory
+                    with open(local_path, 'rb') as f:
+                        data = f.read()
+                    compressed_data = gzip.compress(data)
+                    full_key += '.gz'
 
-            return True
-        except Exception as e:
-            logger.error(f"Failed to upload {s3_key}: {e}")
-            return False
+                    self.s3_client.put_object(
+                        Bucket=self.bucket_name,
+                        Key=full_key,
+                        Body=compressed_data
+                    )
+                else:
+                    self.s3_client.upload_file(local_path, self.bucket_name, full_key)
+
+                return True
+            except Exception as e:
+                logger.error(f"Failed to upload {s3_key}: {e}")
+                return False
+
+        # Run the synchronous operation in a thread pool
+        return await loop.run_in_executor(None, _sync_upload)
 
     async def download_object(self, s3_key: str, local_path: str, decompress: bool = True) -> bool:
-        """Download object from S3 with optional decompression"""
-        try:
-            full_key = self._get_s3_key(s3_key)
+        """Download object from S3 with optional decompression using thread pool"""
+        loop = asyncio.get_event_loop()
 
-            # If decompressing and file doesn't end with .gz, try with .gz extension
-            if decompress and not full_key.endswith('.gz'):
-                gz_key = full_key + '.gz'
-                try:
-                    # Try to get the compressed version first
-                    response = await self.s3_client.get_object(Bucket=self.bucket_name, Key=gz_key)
-                    compressed_data = await response['Body'].read()
+        def _sync_download():
+            try:
+                full_key = self._get_s3_key(s3_key)
+
+                # If decompressing and file doesn't end with .gz, try with .gz extension
+                if decompress and not full_key.endswith('.gz'):
+                    gz_key = full_key + '.gz'
+                    try:
+                        # Try to get the compressed version first
+                        response = self.s3_client.get_object(Bucket=self.bucket_name, Key=gz_key)
+                        compressed_data = response['Body'].read()
+                        data = gzip.decompress(compressed_data)
+
+                        with open(local_path, 'wb') as f:
+                            f.write(data)
+                        return True
+                    except:
+                        # If compressed version doesn't exist, fall back to uncompressed
+                        pass
+
+                if decompress and full_key.endswith('.gz'):
+                    response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+                    compressed_data = response['Body'].read()
                     data = gzip.decompress(compressed_data)
 
                     with open(local_path, 'wb') as f:
                         f.write(data)
-                    return True
-                except:
-                    # If compressed version doesn't exist, fall back to uncompressed
-                    pass
+                else:
+                    self.s3_client.download_file(self.bucket_name, full_key, local_path)
 
-            if decompress and full_key.endswith('.gz'):
-                response = await self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
-                compressed_data = await response['Body'].read()
-                data = gzip.decompress(compressed_data)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to download {s3_key}: {e}")
+                return False
 
-                with open(local_path, 'wb') as f:
-                    f.write(data)
-            else:
-                await self.s3_client.download_file(self.bucket_name, full_key, local_path)
-
-            return True
-        except Exception as e:
-            logger.error(f"Failed to download {s3_key}: {e}")
-            return False
+        return await loop.run_in_executor(None, _sync_download)
 
     async def list_objects(self, prefix: str) -> List[str]:
-        """List objects with given prefix"""
-        try:
-            full_prefix = self._get_s3_key(prefix)
-            objects = []
+        """List objects with given prefix using thread pool"""
+        loop = asyncio.get_event_loop()
 
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=full_prefix):
-                if 'Contents' in page:
-                    for obj in page['Contents']:
-                        # Remove base path to get relative path
-                        key = obj['Key']
-                        if key.startswith(f"{self.base_path}/"):
-                            relative_key = key[len(f"{self.base_path}/"):]
-                            objects.append(relative_key)
+        def _sync_list():
+            try:
+                full_prefix = self._get_s3_key(prefix)
+                objects = []
 
-            return objects
-        except Exception as e:
-            logger.error(f"Failed to list objects with prefix {prefix}: {e}")
-            return []
+                paginator = self.s3_client.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=self.bucket_name, Prefix=full_prefix):
+                    if 'Contents' in page:
+                        for obj in page['Contents']:
+                            # Remove base path to get relative path
+                            key = obj['Key']
+                            if key.startswith(f"{self.base_path}/"):
+                                relative_key = key[len(f"{self.base_path}/"):]
+                                objects.append(relative_key)
+
+                return objects
+            except Exception as e:
+                logger.error(f"Failed to list objects with prefix {prefix}: {e}")
+                return []
+
+        return await loop.run_in_executor(None, _sync_list)
 
     async def put_json(self, data: Dict, s3_key: str) -> bool:
-        """Upload JSON data to S3"""
-        try:
-            full_key = self._get_s3_key(s3_key)
-            json_data = json.dumps(data, indent=2)
+        """Upload JSON data to S3 using thread pool"""
+        loop = asyncio.get_event_loop()
 
-            await self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=full_key,
-                Body=json_data.encode('utf-8'),
-                ContentType='application/json'
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to upload JSON {s3_key}: {e}")
-            return False
+        def _sync_put_json():
+            try:
+                full_key = self._get_s3_key(s3_key)
+                json_data = json.dumps(data, indent=2)
+
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=full_key,
+                    Body=json_data.encode('utf-8'),
+                    ContentType='application/json'
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Failed to upload JSON {s3_key}: {e}")
+                return False
+
+        return await loop.run_in_executor(None, _sync_put_json)
 
     async def get_json(self, s3_key: str) -> Optional[Dict]:
-        """Download JSON data from S3"""
-        try:
-            full_key = self._get_s3_key(s3_key)
-            response = await self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
-            data = await response['Body'].read()
-            return json.loads(data.decode('utf-8'))
-        except Exception as e:
-            logger.error(f"Failed to download JSON {s3_key}: {e}")
-            return None
+        """Download JSON data from S3 using thread pool"""
+        loop = asyncio.get_event_loop()
+
+        def _sync_get_json():
+            try:
+                full_key = self._get_s3_key(s3_key)
+                response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+                data = response['Body'].read()
+                return json.loads(data.decode('utf-8'))
+            except Exception as e:
+                logger.error(f"Failed to download JSON {s3_key}: {e}")
+                return None
+
+        return await loop.run_in_executor(None, _sync_get_json)
 
 
 # Simulation functions (copied and adapted from example_genetic_iv.py)
