@@ -31,14 +31,30 @@ echo "Running as user: $(whoami)"
 echo "Updating package lists..."
 apt-get update -q
 
-# Install Python3 and pip if not available
-echo "Ensuring Python3 and pip are available..."
-apt-get install -y python3 python3-pip
+# Install Python3 and venv if not available
+echo "Ensuring Python3 and venv are available..."
+apt-get install -y python3 python3-pip python3-venv
 
-# Install requirements globally
-echo "Installing Python requirements..."
+# Create virtual environment
+echo "Setting up virtual environment..."
+VENV_DIR="/home/ubuntu/venv"
+if [ -d "$VENV_DIR" ]; then
+    echo "Removing existing virtual environment..."
+    rm -rf "$VENV_DIR"
+fi
+
+echo "Creating virtual environment..."
+python3 -m venv "$VENV_DIR"
+chown -R ubuntu:ubuntu "$VENV_DIR"
+
+# Install requirements in virtual environment
+echo "Installing Python requirements in virtual environment..."
 cd /home/ubuntu/DeepPLIV
-pip3 install -r requirements.txt
+sudo -u ubuntu bash << 'EOF'
+source /home/ubuntu/venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+EOF
 echo "Python packages installed successfully!"
 
 # Create systemd service for auto-restart

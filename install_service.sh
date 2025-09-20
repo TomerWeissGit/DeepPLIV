@@ -27,14 +27,26 @@ fi
 
 echo "Installing DeepPLIV systemd service..."
 
-# Install required packages
+# Install required packages for virtual environment
 echo "Installing required system packages..."
 sudo apt update -q
-sudo apt install -y python3-pip
+sudo apt install -y python3-pip python3-venv
 
-# Install requirements globally (override Ubuntu 24.04 protection)
-echo "Installing Python requirements..."
-pip3 install -r requirements.txt
+# Create virtual environment
+VENV_DIR="/home/ubuntu/venv"
+if [ -d "$VENV_DIR" ]; then
+    echo "Removing existing virtual environment..."
+    rm -rf "$VENV_DIR"
+fi
+
+echo "Creating virtual environment..."
+python3 -m venv "$VENV_DIR"
+
+# Install requirements in virtual environment
+echo "Installing Python requirements in virtual environment..."
+source "$VENV_DIR/bin/activate"
+pip install --upgrade pip
+pip install -r requirements.txt
 
 # Copy service file to systemd directory (requires sudo)
 echo "Installing systemd service file..."
