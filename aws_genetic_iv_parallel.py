@@ -179,21 +179,28 @@ beta_x = 2
 
 
 class S3Manager:
-    """Async S3 operations manager"""
+    """Async S3 operations manager with proper aioboto3 context management"""
 
     def __init__(self, bucket_name: str, region: str, base_path: str):
         self.bucket_name = bucket_name
         self.region = region
         self.base_path = base_path
         self.session = None
+        self.s3_client = None
+        self._client_context = None
 
     async def __aenter__(self):
+        # Create session and client context manager properly
         self.session = aioboto3.Session()
-        self.s3_client = await self.session.client('s3', region_name=self.region).__aenter__()
+        self._client_context = self.session.client('s3', region_name=self.region)
+        # Use the context manager properly instead of manual __aenter__()
+        self.s3_client = await self._client_context.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.s3_client.__aexit__(exc_type, exc_val, exc_tb)
+        # Properly close the client context manager
+        if self._client_context:
+            await self._client_context.__aexit__(exc_type, exc_val, exc_tb)
 
     def _get_s3_key(self, relative_path: str) -> str:
         """Convert relative path to full S3 key"""
