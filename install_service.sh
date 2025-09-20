@@ -27,6 +27,11 @@ fi
 
 echo "Installing DeepPLIV systemd service..."
 
+# Install required packages for virtual environment
+echo "Installing required system packages..."
+sudo apt update -q
+sudo apt install -y python3-venv python3-pip
+
 # Create virtual environment if it doesn't exist
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
