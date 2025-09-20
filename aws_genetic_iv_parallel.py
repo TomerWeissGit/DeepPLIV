@@ -48,13 +48,13 @@ class Config:
     # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """Fixed 16 outer workers for high throughput"""
-        return 16
+        """Reduced outer workers to prevent blocking"""
+        return 1
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        """Fixed 1 inner worker to minimize memory usage"""
-        return 1
+        """Increased inner workers for bootstrap efficiency"""
+        return 16
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -125,7 +125,7 @@ class Config:
         mode = "LOCAL TESTING" if self.LOCAL_MODE else "FULL AWS"
         logger.info(f"Configuration loaded for {mode} mode")
         logger.info(f"S3 Configuration: Bucket={self.S3_BUCKET}, Path={self.BASE_S3_PATH}, Region={self.AWS_REGION}")
-        logger.info(f"CPU cores: {mp.cpu_count()}, Outer workers: {self.MAX_OUTER_WORKERS}, Inner workers: {self.MAX_INNER_WORKERS}")
+        logger.info(f"CPU cores: {mp.cpu_count()}, Outer workers: {self.MAX_OUTER_WORKERS} (optimized), Inner workers: {self.MAX_INNER_WORKERS} (optimized)")
         logger.info(
             f"Parameters: ENSEMBLE_SIZE={self.ENSEMBLE_SIZE}, BOOTSTRAPS={self.BOOTSTRAPS}, NUM_SIMULATIONS={self.NUM_SIMULATIONS}, MAX_WORKERS={self.MAX_WORKERS}")
 
