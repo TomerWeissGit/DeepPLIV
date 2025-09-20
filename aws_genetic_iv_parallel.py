@@ -876,10 +876,11 @@ class DatasetGenerator:
                 return config_id, False
 
         # Execute all uploads concurrently
-        upload_results = await asyncio.gather(*[
+        upload_tasks_coroutines = [
             upload_single_file(local_path, s3_key, config_id, run_id)
             for local_path, s3_key, config_id, run_id in upload_tasks
-        ])
+        ]
+        upload_results = await asyncio.gather(*upload_tasks_coroutines)
 
         # Count successful uploads per config
         for config_id, success in upload_results:
