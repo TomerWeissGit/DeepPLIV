@@ -107,9 +107,20 @@ systemctl start deeppliv.service
 echo "Service status:"
 systemctl status deeppliv.service --no-pager -l
 
+# Setup CloudWatch monitoring
+echo "Setting up CloudWatch monitoring..."
+if [ -f "/home/ubuntu/DeepPLIV/setup_cloudwatch.sh" ]; then
+    chmod +x /home/ubuntu/DeepPLIV/setup_cloudwatch.sh
+    bash /home/ubuntu/DeepPLIV/setup_cloudwatch.sh
+else
+    echo "Warning: CloudWatch setup script not found"
+fi
+
 echo "=================================================================="
 echo "DeepPLIV startup completed successfully!"
 echo "=================================================================="
-echo "Monitor logs with: sudo journalctl -u deeppliv.service -f"
+echo "Monitor logs with:"
+echo "  Local: sudo journalctl -u deeppliv.service -f"
+echo "  CloudWatch: aws logs tail /aws/ec2/deeppliv/systemd --follow"
 echo "Check status with: sudo systemctl status deeppliv.service"
 echo "=================================================================="

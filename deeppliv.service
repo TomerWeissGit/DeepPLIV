@@ -10,6 +10,8 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/DeepPLIV
+StandardOutput=append:/var/log/deeppliv-startup.log
+StandardError=append:/var/log/deeppliv-startup.log
 
 # Environment setup
 Environment=PATH=/home/ubuntu/venv/bin:/usr/local/bin:/usr/bin:/bin
