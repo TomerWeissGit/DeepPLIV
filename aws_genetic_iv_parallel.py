@@ -186,7 +186,6 @@ class S3Manager:
         self.region = region
         self.base_path = base_path
         self.session = None
-        self._active_tasks = set()
 
     async def __aenter__(self):
         self.session = aioboto3.Session()
@@ -194,12 +193,6 @@ class S3Manager:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # Wait for all active upload tasks to complete before closing
-        if self._active_tasks:
-            logger.info(f"Waiting for {len(self._active_tasks)} active S3 operations to complete...")
-            await asyncio.gather(*self._active_tasks, return_exceptions=True)
-            logger.info("All S3 operations completed. Closing session.")
-
         await self.s3_client.__aexit__(exc_type, exc_val, exc_tb)
 
     def _get_s3_key(self, relative_path: str) -> str:
@@ -207,10 +200,7 @@ class S3Manager:
         return f"{self.base_path}/{relative_path}"
 
     async def upload_object(self, local_path: str, s3_key: str, compress: bool = True) -> bool:
-        """Upload object to S3 with optional compression and task tracking"""
-        task = asyncio.current_task()
-        self._active_tasks.add(task)
-
+        """Upload object to S3 with optional compression"""
         try:
             full_key = self._get_s3_key(s3_key)
 
@@ -233,9 +223,6 @@ class S3Manager:
         except Exception as e:
             logger.error(f"Failed to upload {s3_key}: {e}")
             return False
-        finally:
-            # Remove task from active set when done
-            self._active_tasks.discard(task)
 
     async def download_object(self, s3_key: str, local_path: str, decompress: bool = True) -> bool:
         """Download object from S3 with optional decompression"""
@@ -295,10 +282,7 @@ class S3Manager:
             return []
 
     async def put_json(self, data: Dict, s3_key: str) -> bool:
-        """Upload JSON data to S3 with task tracking"""
-        task = asyncio.current_task()
-        self._active_tasks.add(task)
-
+        """Upload JSON data to S3"""
         try:
             full_key = self._get_s3_key(s3_key)
             json_data = json.dumps(data, indent=2)
@@ -313,9 +297,6 @@ class S3Manager:
         except Exception as e:
             logger.error(f"Failed to upload JSON {s3_key}: {e}")
             return False
-        finally:
-            # Remove task from active set when done
-            self._active_tasks.discard(task)
 
     async def get_json(self, s3_key: str) -> Optional[Dict]:
         """Download JSON data from S3"""
