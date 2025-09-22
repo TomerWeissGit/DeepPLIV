@@ -37,9 +37,9 @@ from core.trainer import DeepPLIV
 import torch
 
 # Optimize PyTorch threading for parallel workers
-# Allow 4 threads per PyTorch operation for better CPU utilization
-torch.set_num_threads(4)
-torch.set_num_interop_threads(4)
+# Let each process use a couple CPU threads for matmul/BLAS
+torch.set_num_threads(2)
+torch.set_num_interop_threads(2)
 
 
 # Configuration
@@ -53,15 +53,33 @@ class Config:
     # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """Parallel dataset processing workers"""
-        cpu_count = mp.cpu_count()
-        return max(4, cpu_count // 8)  # 4 workers for 32-core instance
+        """How many datasets to process in parallel (coarse grain)"""
+        logical_cores = mp.cpu_count()
+        # Assume 2x hyperthreading, so physical cores = logical_cores / 2
+        physical_cores = logical_cores // 2
+        # Use ~50% of physical cores for outer workers to avoid oversubscription
+        return max(8, physical_cores // 2)
 
     @property
+    def MAX_INNER_CPU_WORKERS(self) -> int:
+        """CPU-bound inner parallelism (bootstraps, resampling, statsmodels)"""
+        logical_cores = mp.cpu_count()
+        physical_cores = logical_cores // 2
+        # Target ~1.25x physical cores total to use hyperthreads efficiently
+        target_total_workers = int(physical_cores * 1.25)
+        return max(4, target_total_workers // self.MAX_OUTER_WORKERS)
+
+    @property
+    def MAX_INNER_GPU_WORKERS(self) -> int:
+        """How many model trainings to feed to ONE GPU in parallel"""
+        # T4 is happy with 2–4 concurrent trainings; tune if needed
+        return int(os.getenv("MAX_INNER_GPU_WORKERS", "4"))
+
+    # Backward compatibility
+    @property
     def MAX_INNER_WORKERS(self) -> int:
-        """Process-based workers for compute operations"""
-        cpu_count = mp.cpu_count()
-        return cpu_count // self.MAX_OUTER_WORKERS  # 8 inner workers per outer worker
+        """Backward compatibility - defaults to CPU workers"""
+        return self.MAX_INNER_CPU_WORKERS
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -122,12 +140,12 @@ class Config:
         self.__post_init_s3()
 
         # Set threading environment variables for optimal CPU utilization
-        # Allow 4 threads per process for BLAS operations
-        os.environ['OMP_NUM_THREADS'] = '4'
-        os.environ['MKL_NUM_THREADS'] = '4'
-        os.environ['OPENBLAS_NUM_THREADS'] = '4'
-        os.environ['VECLIB_MAXIMUM_THREADS'] = '4'
-        os.environ['NUMEXPR_NUM_THREADS'] = '4'
+        # Let BLAS have a few threads per process (don't starve it, don't oversubscribe)
+        os.environ['OMP_NUM_THREADS'] = '2'
+        os.environ['MKL_NUM_THREADS'] = '2'
+        os.environ['OPENBLAS_NUM_THREADS'] = '2'
+        os.environ['VECLIB_MAXIMUM_THREADS'] = '2'
+        os.environ['NUMEXPR_NUM_THREADS'] = '2'
 
         if self.N_VALUES is None:
             # Smaller values for local testing
@@ -595,15 +613,21 @@ def _run_single_nn_wrapper(args):
     return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
 
 async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
-    """Async ensemble NN estimation with capped inner workers - returns both means and individual estimates"""
-    loop = asyncio.get_event_loop()
+    """
+    Run multiple NN trainings. Threads are OK here because CUDA ops release the GIL
+    and overlapping kernels increases GPU utilization. Keep max_workers small (2-4).
+    """
+    loop = asyncio.get_running_loop()
 
-    # Use ThreadPoolExecutor for NN operations to avoid pickling issues
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [loop.run_in_executor(executor, _run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
-        results = await asyncio.gather(*tasks)
+    def _run_many():
+        # Do it synchronously inside a thread to avoid event-loop overhead
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
+            return [f.result() for f in as_completed(futs)]
 
-    valid_results = [r for r in results if r[0] is not None]
+    results = await loop.run_in_executor(None, _run_many)
+
+    valid_results = [r for r in results if r and r[0] is not None]
     if not valid_results:
         return None, None, None, [], [], []
 
@@ -612,81 +636,98 @@ async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
     naive_list = [r[2] for r in valid_results]
 
     # Return both aggregated means and individual estimates
-    return (np.mean(sps_list), np.mean(sri_list), np.mean(naive_list),
+    return (float(np.mean(sps_list)), float(np.mean(sri_list)), float(np.mean(naive_list)),
             sps_list, sri_list, naive_list)
 
 
 def _bootstrap_sample_wrapper(args):
     """Wrapper function for bootstrap sampling"""
-    base_func, df_x, df_y, n_x, n_y = args
-    idx_x = np.random.choice(n_x, n_x, replace=True)
-    idx_y = np.random.choice(n_y, n_y, replace=True)
+    base_func, df_x, df_y, n_x, n_y, seed = args
+    rng = np.random.default_rng(seed)
+    idx_x = rng.integers(0, n_x, n_x)
+    idx_y = rng.integers(0, n_y, n_y)
     return base_func(df_x.iloc[idx_x], df_y.iloc[idx_y])
 
 async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
-    """Parallel bootstrap CI with capped inner workers - returns mean, CI, and individual estimates"""
-    loop = asyncio.get_event_loop()
+    """
+    CPU-bound bootstrap in processes to bypass GIL and hit all cores.
+    """
+    loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
+    seeds = np.random.SeedSequence().spawn(B)
 
-    # Use ThreadPoolExecutor for bootstrap operations to avoid pickling issues
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [loop.run_in_executor(executor, _bootstrap_sample_wrapper, (base_func, df_x, df_y, n_x, n_y)) for _ in range(B)]
-        estimates = await asyncio.gather(*tasks)
+    def _run_many():
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_bootstrap_sample_wrapper,
+                              (base_func, df_x, df_y, n_x, n_y, int(s.generate_state(1)[0])))
+                    for s in seeds]
+            return [f.result() for f in as_completed(futs)]
+
+    estimates = await loop.run_in_executor(None, _run_many)
 
     ci_low, ci_high = np.percentile(estimates, ci_level)
-    return np.mean(estimates), (ci_low, ci_high), estimates
+    return float(np.mean(estimates)), (float(ci_low), float(ci_high)), estimates
 
 
 def _bootstrap_ensemble_sample_wrapper(args):
     """Wrapper function for bootstrap ensemble sampling"""
-    ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs = args
-    sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
+    (sps_e, sri_e, nv_e), df_x, df_y, n_x, n_y, nn_kwargs, seed = args
+    rng = np.random.default_rng(seed)
+    idx_x = rng.integers(0, n_x, n_x)
+    idx_y = rng.integers(0, n_y, n_y)
+    dfx = df_x.iloc[idx_x].reset_index(drop=True)
+    dfy = df_y.iloc[idx_y].reset_index(drop=True)
 
-    idx_x = np.random.choice(n_x, n_x, replace=True)
-    idx_y = np.random.choice(n_y, n_y, replace=True)
-    df_x_boot = df_x.iloc[idx_x].reset_index(drop=True)
-    df_y_boot = df_y.iloc[idx_y].reset_index(drop=True)
-
-    sps_boot, sri_boot, naive_boot = estimating_sri_sps_with_nn(
-        df_x_boot, df_y_boot, **nn_kwargs
-    )
+    sps_b, sri_b, nv_b = estimating_sri_sps_with_nn(dfx, dfy, **nn_kwargs)
     return (
-        sps_boot if sps_boot else None,
-        sri_boot if sri_boot else None,
-        naive_boot if naive_boot else None,
-        abs(sps_boot - sps_ensemble) if sps_boot else 0,
-        abs(sri_boot - sri_ensemble) if sri_boot else 0,
-        abs(naive_boot - naive_ensemble) if naive_boot else 0,
+        sps_b, sri_b, nv_b,
+        abs(sps_b - sps_e) if sps_b is not None else None,
+        abs(sri_b - sri_e) if sri_b is not None else None,
+        abs(nv_b  - nv_e ) if nv_b  is not None else None,
     )
 
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, **nn_kwargs):
-    """Parallel bootstrap CI for ensemble NN with capped inner workers - returns CIs and individual estimates"""
-    sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
+    """
+    Hybrid: spawn processes for resampling but *limit* the number of concurrent jobs
+    to avoid overloading a single GPU.
+    """
+    loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
+    seeds = np.random.SeedSequence().spawn(B)
 
-    # Use ThreadPoolExecutor for bootstrap operations to avoid pickling issues
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [executor.submit(_bootstrap_ensemble_sample_wrapper, (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs)) for _ in range(B)]
-        results = [t.result() for t in tasks]
+    # Hard cap here: don't exceed 2–4 concurrent GPU trainings
+    gpu_cap = max(1, min(max_workers, int(os.getenv("MAX_BOOTSTRAP_GPU_CONCURRENCY", "3"))))
 
-    # Extract individual estimates and errors
-    sps_estimates = [r[0] for r in results if r[0] is not None]
-    sri_estimates = [r[1] for r in results if r[1] is not None]
-    naive_estimates = [r[2] for r in results if r[2] is not None]
+    def _run_many():
+        results = []
+        # Use a small pool == gpu_cap to protect the single GPU
+        with ProcessPoolExecutor(max_workers=gpu_cap) as ex:
+            futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
+                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs,
+                               int(s.generate_state(1)[0])))
+                    for s in seeds]
+            for f in as_completed(futs):
+                results.append(f.result())
+        return results
 
-    sps_errors = [r[3] for r in results]
-    sri_errors = [r[4] for r in results]
-    naive_errors = [r[5] for r in results]
+    results = await loop.run_in_executor(None, _run_many)
 
-    sps_ci = (sps_ensemble - np.percentile(sps_errors, 95),
-              sps_ensemble + np.percentile(sps_errors, 95))
-    sri_ci = (sri_ensemble - np.percentile(sri_errors, 95),
-              sri_ensemble + np.percentile(sri_errors, 95))
-    naive_ci = (naive_ensemble - np.percentile(naive_errors, 95),
-                naive_ensemble + np.percentile(naive_errors, 95))
+    # Extract & compute CIs
+    sps_est = [r[0] for r in results if r[0] is not None]
+    sri_est = [r[1] for r in results if r[1] is not None]
+    nv_est  = [r[2] for r in results if r[2] is not None]
 
-    return (sps_ci, sri_ci, naive_ci,
-            sps_estimates, sri_estimates, naive_estimates)
+    sps_err = [r[3] for r in results if r[3] is not None]
+    sri_err = [r[4] for r in results if r[4] is not None]
+    nv_err  = [r[5] for r in results if r[5] is not None]
+
+    sps_e, sri_e, nv_e = ensemble_estimates
+
+    sps_ci = (float(sps_e - np.percentile(sps_err, 95)), float(sps_e + np.percentile(sps_err, 95))) if sps_err else (None, None)
+    sri_ci = (float(sri_e - np.percentile(sri_err, 95)), float(sri_e + np.percentile(sri_err, 95))) if sri_err else (None, None)
+    nv_ci  = (float(nv_e  - np.percentile(nv_err,  95)), float(nv_e  + np.percentile(nv_err,  95))) if nv_err  else (None, None)
+
+    return (sps_ci, sri_ci, nv_ci, sps_est, sri_est, nv_est)
 
 
 logger = logging.getLogger(__name__)
@@ -1097,6 +1138,20 @@ def log_gpu_memory():
         allocated = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
         logger.info(f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+def log_gpu_status():
+    """Log comprehensive GPU utilization and status"""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw",
+             "--format=csv,nounits,noheader"]
+        ).decode("utf-8").strip()
+        util, mem_used, mem_tot, pwr = [x.strip() for x in out.split(",")]
+        logger.info(f"GPU Util: {util}% | Mem: {mem_used}/{mem_tot} MiB | Power: {pwr} W")
+    except Exception as e:
+        logger.debug(f"nvidia-smi not available or failed: {e}")
 
 class AsyncWorker:
     """Individual worker for processing datasets with GPU monitoring"""
