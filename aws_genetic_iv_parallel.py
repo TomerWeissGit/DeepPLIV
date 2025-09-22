@@ -49,12 +49,12 @@ class Config:
     @property
     def MAX_OUTER_WORKERS(self) -> int:
         """2 outer workers for 96 CPU instance"""
-        return 2
+        return 1
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
         """47 inner workers for bootstrap efficiency"""
-        return 47
+        return 32
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -100,6 +100,7 @@ class Config:
         """Scale max workers based on CPU count"""
         cpu_count = mp.cpu_count()
         return cpu_count  # Conservative for smaller instances
+
     BATCH_SIZE: int = 8  # Datasets per worker batch
 
     # Parameter Grid
