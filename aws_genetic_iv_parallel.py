@@ -36,6 +36,10 @@ from botocore.exceptions import NoCredentialsError
 from core.trainer import DeepPLIV
 import torch
 
+# Optimize PyTorch threading for parallel workers
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 
 # Configuration
 @dataclass
@@ -113,6 +117,13 @@ class Config:
     def __post_init__(self):
         # Parse S3 configuration first
         self.__post_init_s3()
+
+        # Set threading environment variables for optimal CPU utilization
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+        os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+        os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
         if self.N_VALUES is None:
             # Smaller values for local testing
@@ -1081,11 +1092,15 @@ class AsyncWorker:
         self.s3_manager = s3_manager
         self.processed_count = 0
 
+        # Optimize PyTorch threading for this worker
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+
         # Log GPU status for this worker
         if torch.cuda.is_available():
             logger.info(f"Worker {worker_id}: GPU device available - {torch.cuda.get_device_name(0)}")
         else:
-            logger.info(f"Worker {worker_id}: Using CPU")
+            logger.info(f"Worker {worker_id}: Using CPU (single-threaded optimization)")
 
     async def process_single_dataset(self, task: Dict) -> Dict:
         """Process a single dataset task with nested parallelism"""
