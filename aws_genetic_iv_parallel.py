@@ -48,13 +48,13 @@ class Config:
     # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """Reduced outer workers to prevent blocking"""
-        return 1
+        """2 outer workers for 96 CPU instance"""
+        return 2
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        """Increased inner workers for bootstrap efficiency"""
-        return 16
+        """47 inner workers for bootstrap efficiency"""
+        return 47
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -95,7 +95,11 @@ class Config:
     DROPOUT: float = 0.01
 
     # Processing Optimization
-    MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "32"))
+    @property
+    def MAX_WORKERS(self) -> int:
+        """Scale max workers based on CPU count"""
+        cpu_count = mp.cpu_count()
+        return cpu_count  # Conservative for smaller instances
     BATCH_SIZE: int = 8  # Datasets per worker batch
 
     # Parameter Grid
