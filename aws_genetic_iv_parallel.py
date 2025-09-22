@@ -1092,10 +1092,6 @@ class AsyncWorker:
         self.s3_manager = s3_manager
         self.processed_count = 0
 
-        # Optimize PyTorch threading for this worker
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
-
         # Log GPU status for this worker
         if torch.cuda.is_available():
             logger.info(f"Worker {worker_id}: GPU device available - {torch.cuda.get_device_name(0)}")
