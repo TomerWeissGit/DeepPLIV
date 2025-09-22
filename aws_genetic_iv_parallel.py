@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 import os
 import pickle
@@ -37,8 +37,9 @@ from core.trainer import DeepPLIV
 import torch
 
 # Optimize PyTorch threading for parallel workers
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
+# Allow 4 threads per PyTorch operation for better CPU utilization
+torch.set_num_threads(4)
+torch.set_num_interop_threads(4)
 
 
 # Configuration
@@ -52,13 +53,15 @@ class Config:
     # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """2 outer workers for 96 CPU instance"""
-        return 1
+        """Parallel dataset processing workers"""
+        cpu_count = mp.cpu_count()
+        return max(4, cpu_count // 8)  # 4 workers for 32-core instance
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        """47 inner workers for bootstrap efficiency"""
-        return 32
+        """Process-based workers for compute operations"""
+        cpu_count = mp.cpu_count()
+        return cpu_count // self.MAX_OUTER_WORKERS  # 8 inner workers per outer worker
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -119,11 +122,12 @@ class Config:
         self.__post_init_s3()
 
         # Set threading environment variables for optimal CPU utilization
-        os.environ['OMP_NUM_THREADS'] = '1'
-        os.environ['MKL_NUM_THREADS'] = '1'
-        os.environ['OPENBLAS_NUM_THREADS'] = '1'
-        os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
-        os.environ['NUMEXPR_NUM_THREADS'] = '1'
+        # Allow 4 threads per process for BLAS operations
+        os.environ['OMP_NUM_THREADS'] = '4'
+        os.environ['MKL_NUM_THREADS'] = '4'
+        os.environ['OPENBLAS_NUM_THREADS'] = '4'
+        os.environ['VECLIB_MAXIMUM_THREADS'] = '4'
+        os.environ['NUMEXPR_NUM_THREADS'] = '4'
 
         if self.N_VALUES is None:
             # Smaller values for local testing
@@ -592,7 +596,7 @@ async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
     def run_single_nn():
         return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         tasks = [loop.run_in_executor(executor, run_single_nn) for _ in range(M)]
         results = await asyncio.gather(*tasks)
 
@@ -619,7 +623,7 @@ async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
         idx_y = np.random.choice(n_y, n_y, replace=True)
         return base_func(df_x.iloc[idx_x], df_y.iloc[idx_y])
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         tasks = [loop.run_in_executor(executor, bootstrap_sample) for _ in range(B)]
         estimates = await asyncio.gather(*tasks)
 
@@ -650,7 +654,7 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
             abs(naive_boot - naive_ensemble) if naive_boot else 0,
         )
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         tasks = [executor.submit(bootstrap_single_sample) for _ in range(B)]
         results = [t.result() for t in tasks]
 
@@ -849,7 +853,7 @@ class DatasetGenerator:
         logger.info(f"Submitting {len(all_generation_tasks)} dataset generation tasks to thread pool...")
 
         # Generate ALL datasets in parallel using all CPU cores
-        with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
+        with ProcessPoolExecutor(max_workers=mp.cpu_count()) as executor:
             # Submit all tasks
             future_to_task = {}
             for config_id, config_params, run_id, temp_dir in all_generation_tasks:

@@ -19,11 +19,11 @@ Environment=PYTHONPATH=/home/ubuntu/DeepPLIV
 Environment=PYTHONUNBUFFERED=1
 
 # Threading optimization for 32-core instance
-Environment=OMP_NUM_THREADS=1
-Environment=MKL_NUM_THREADS=1
-Environment=OPENBLAS_NUM_THREADS=1
-Environment=VECLIB_MAXIMUM_THREADS=1
-Environment=NUMEXPR_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=4
+Environment=MKL_NUM_THREADS=4
+Environment=OPENBLAS_NUM_THREADS=4
+Environment=VECLIB_MAXIMUM_THREADS=4
+Environment=NUMEXPR_NUM_THREADS=4
 
 # Main execution command
 ExecStart=/home/ubuntu/venv/bin/python aws_genetic_iv_parallel.py execute
