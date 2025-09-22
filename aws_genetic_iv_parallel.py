@@ -589,15 +589,18 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
         return None, None, None
 
 
+def _run_single_nn_wrapper(args):
+    """Wrapper function for ProcessPoolExecutor compatibility"""
+    df_x, df_y, nn_kwargs = args
+    return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
+
 async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
     """Async ensemble NN estimation with capped inner workers - returns both means and individual estimates"""
     loop = asyncio.get_event_loop()
 
-    def run_single_nn():
-        return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [loop.run_in_executor(executor, run_single_nn) for _ in range(M)]
+    # Use ThreadPoolExecutor for NN operations to avoid pickling issues
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [loop.run_in_executor(executor, _run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
         results = await asyncio.gather(*tasks)
 
     valid_results = [r for r in results if r[0] is not None]
@@ -613,49 +616,57 @@ async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
             sps_list, sri_list, naive_list)
 
 
+def _bootstrap_sample_wrapper(args):
+    """Wrapper function for bootstrap sampling"""
+    base_func, df_x, df_y, n_x, n_y = args
+    idx_x = np.random.choice(n_x, n_x, replace=True)
+    idx_y = np.random.choice(n_y, n_y, replace=True)
+    return base_func(df_x.iloc[idx_x], df_y.iloc[idx_y])
+
 async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
     """Parallel bootstrap CI with capped inner workers - returns mean, CI, and individual estimates"""
     loop = asyncio.get_event_loop()
     n_x, n_y = len(df_x), len(df_y)
 
-    def bootstrap_sample():
-        idx_x = np.random.choice(n_x, n_x, replace=True)
-        idx_y = np.random.choice(n_y, n_y, replace=True)
-        return base_func(df_x.iloc[idx_x], df_y.iloc[idx_y])
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [loop.run_in_executor(executor, bootstrap_sample) for _ in range(B)]
+    # Use ThreadPoolExecutor for bootstrap operations to avoid pickling issues
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [loop.run_in_executor(executor, _bootstrap_sample_wrapper, (base_func, df_x, df_y, n_x, n_y)) for _ in range(B)]
         estimates = await asyncio.gather(*tasks)
 
     ci_low, ci_high = np.percentile(estimates, ci_level)
     return np.mean(estimates), (ci_low, ci_high), estimates
 
 
+def _bootstrap_ensemble_sample_wrapper(args):
+    """Wrapper function for bootstrap ensemble sampling"""
+    ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs = args
+    sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
+
+    idx_x = np.random.choice(n_x, n_x, replace=True)
+    idx_y = np.random.choice(n_y, n_y, replace=True)
+    df_x_boot = df_x.iloc[idx_x].reset_index(drop=True)
+    df_y_boot = df_y.iloc[idx_y].reset_index(drop=True)
+
+    sps_boot, sri_boot, naive_boot = estimating_sri_sps_with_nn(
+        df_x_boot, df_y_boot, **nn_kwargs
+    )
+    return (
+        sps_boot if sps_boot else None,
+        sri_boot if sri_boot else None,
+        naive_boot if naive_boot else None,
+        abs(sps_boot - sps_ensemble) if sps_boot else 0,
+        abs(sri_boot - sri_ensemble) if sri_boot else 0,
+        abs(naive_boot - naive_ensemble) if naive_boot else 0,
+    )
+
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, **nn_kwargs):
     """Parallel bootstrap CI for ensemble NN with capped inner workers - returns CIs and individual estimates"""
     sps_ensemble, sri_ensemble, naive_ensemble = ensemble_estimates
     n_x, n_y = len(df_x), len(df_y)
 
-    def bootstrap_single_sample():
-        idx_x = np.random.choice(n_x, n_x, replace=True)
-        idx_y = np.random.choice(n_y, n_y, replace=True)
-        df_x_boot = df_x.iloc[idx_x].reset_index(drop=True)
-        df_y_boot = df_y.iloc[idx_y].reset_index(drop=True)
-
-        sps_boot, sri_boot, naive_boot = estimating_sri_sps_with_nn(
-            df_x_boot, df_y_boot, **nn_kwargs
-        )
-        return (
-            sps_boot if sps_boot else None,
-            sri_boot if sri_boot else None,
-            naive_boot if naive_boot else None,
-            abs(sps_boot - sps_ensemble) if sps_boot else 0,
-            abs(sri_boot - sri_ensemble) if sri_boot else 0,
-            abs(naive_boot - naive_ensemble) if naive_boot else 0,
-        )
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        tasks = [executor.submit(bootstrap_single_sample) for _ in range(B)]
+    # Use ThreadPoolExecutor for bootstrap operations to avoid pickling issues
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [executor.submit(_bootstrap_ensemble_sample_wrapper, (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs)) for _ in range(B)]
         results = [t.result() for t in tasks]
 
     # Extract individual estimates and errors
