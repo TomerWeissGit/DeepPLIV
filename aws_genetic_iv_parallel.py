@@ -38,8 +38,8 @@ import torch
 
 # Optimize PyTorch threading for parallel workers
 # Let each process use a couple CPU threads for matmul/BLAS
-torch.set_num_threads(2)
-torch.set_num_interop_threads(2)
+torch.set_num_threads(8)
+torch.set_num_interop_threads(8)
 
 
 # Configuration
@@ -54,19 +54,11 @@ class Config:
     @property
     def MAX_OUTER_WORKERS(self) -> int:
         """How many datasets to process in parallel (coarse grain)"""
-        logical_cores = mp.cpu_count()
-        # Assume 2x hyperthreading, so physical cores = logical_cores / 2
-        physical_cores = logical_cores // 2
-        # Use ~50% of physical cores for outer workers to avoid oversubscription
         return 3
 
     @property
     def MAX_INNER_CPU_WORKERS(self) -> int:
         """CPU-bound inner parallelism (bootstraps, resampling, statsmodels)"""
-        logical_cores = mp.cpu_count()
-        physical_cores = logical_cores // 2
-        # Target ~1.25x physical cores total to use hyperthreads efficiently
-        target_total_workers = int(physical_cores * 4)
         return 2
 
     # Backward compatibility
