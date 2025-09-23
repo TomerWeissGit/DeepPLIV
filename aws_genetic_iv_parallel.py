@@ -36,10 +36,10 @@ from botocore.exceptions import NoCredentialsError
 from core.trainer import DeepPLIV
 import torch
 
-# Optimize PyTorch threading for parallel workers
-# Let each process use a couple CPU threads for matmul/BLAS
-torch.set_num_threads(8)
-torch.set_num_interop_threads(8)
+# Optimize PyTorch threading for 32 concurrent tasks
+# Single thread per task to avoid oversubscription
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 
 # Configuration
@@ -50,22 +50,24 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    # Worker optimization based on CPU cores
+    # Simplified worker configuration - just run 32 concurrent tasks
+    @property
+    def MAX_CONCURRENT_TASKS(self) -> int:
+        """Maximum number of concurrent tasks to run"""
+        return 32
+
+    # Backward compatibility for existing code
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """How many datasets to process in parallel (coarse grain)"""
-        return 3
+        return 1  # Single executor managing all tasks
+
+    @property
+    def MAX_INNER_WORKERS(self) -> int:
+        return self.MAX_CONCURRENT_TASKS
 
     @property
     def MAX_INNER_CPU_WORKERS(self) -> int:
-        """CPU-bound inner parallelism (bootstraps, resampling, statsmodels)"""
-        return 2
-
-    # Backward compatibility
-    @property
-    def MAX_INNER_WORKERS(self) -> int:
-        """Backward compatibility - defaults to CPU workers"""
-        return self.MAX_INNER_CPU_WORKERS
+        return self.MAX_CONCURRENT_TASKS
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -126,12 +128,12 @@ class Config:
         self.__post_init_s3()
 
         # Set threading environment variables for optimal CPU utilization
-        # Let BLAS have a few threads per process (don't starve it, don't oversubscribe)
-        os.environ['OMP_NUM_THREADS'] = '2'
-        os.environ['MKL_NUM_THREADS'] = '2'
-        os.environ['OPENBLAS_NUM_THREADS'] = '2'
-        os.environ['VECLIB_MAXIMUM_THREADS'] = '2'
-        os.environ['NUMEXPR_NUM_THREADS'] = '2'
+        # With 32 concurrent tasks, keep threading per process low
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+        os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+        os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
         if self.N_VALUES is None:
             # Smaller values for local testing
