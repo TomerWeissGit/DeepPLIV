@@ -73,7 +73,7 @@ class Config:
     def MAX_INNER_GPU_WORKERS(self) -> int:
         """How many model trainings to feed to ONE GPU in parallel"""
         # T4 is happy with 2–4 concurrent trainings; tune if needed
-        return int(os.getenv("MAX_INNER_GPU_WORKERS", "4"))
+        return 8
 
     # Backward compatibility
     @property
