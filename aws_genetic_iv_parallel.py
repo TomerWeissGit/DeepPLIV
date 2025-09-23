@@ -66,14 +66,14 @@ class Config:
         logical_cores = mp.cpu_count()
         physical_cores = logical_cores // 2
         # Target ~1.25x physical cores total to use hyperthreads efficiently
-        target_total_workers = int(physical_cores * 0.5)
+        target_total_workers = int(physical_cores * 4)
         return max(2, target_total_workers // self.MAX_OUTER_WORKERS)
 
     @property
     def MAX_INNER_GPU_WORKERS(self) -> int:
         """How many model trainings to feed to ONE GPU in parallel"""
         # T4 is happy with 2–4 concurrent trainings; tune if needed
-        return 8
+        return 16
 
     # Backward compatibility
     @property
