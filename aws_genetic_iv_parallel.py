@@ -66,7 +66,7 @@ class Config:
         logical_cores = mp.cpu_count()
         physical_cores = logical_cores // 2
         # Target ~1.25x physical cores total to use hyperthreads efficiently
-        target_total_workers = int(physical_cores * 1.25)
+        target_total_workers = int(physical_cores * 2)
         return max(4, target_total_workers // self.MAX_OUTER_WORKERS)
 
     @property
