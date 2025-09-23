@@ -54,7 +54,7 @@ class Config:
     @property
     def MAX_CONCURRENT_TASKS(self) -> int:
         """Maximum number of concurrent tasks to run"""
-        return 32
+        return 50
 
     # Backward compatibility for existing code
     @property
