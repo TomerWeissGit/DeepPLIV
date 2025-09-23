@@ -15,6 +15,9 @@ import os
 import pickle
 import logging
 
+# Set multiprocessing start method to 'spawn' for CUDA compatibility
+mp.set_start_method('spawn', force=True)
+
 # Load environment variables
 from dotenv import load_dotenv
 
@@ -602,18 +605,14 @@ def _run_single_nn_wrapper(args):
 
 async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
     """
-    Run multiple NN trainings. Threads are OK here because CUDA ops release the GIL
-    and overlapping kernels increases GPU utilization. Keep max_workers small (2-4).
+    Run multiple NN trainings using ThreadPoolExecutor for CUDA compatibility
     """
     loop = asyncio.get_running_loop()
 
-    def _run_many():
-        # Do it synchronously inside a thread to avoid event-loop overhead
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
-            return [f.result() for f in as_completed(futs)]
-
-    results = await loop.run_in_executor(None, _run_many)
+    # Use ThreadPoolExecutor for CUDA operations - much simpler and avoids spawn issues
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [loop.run_in_executor(executor, _run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
+        results = await asyncio.gather(*tasks)
 
     valid_results = [r for r in results if r and r[0] is not None]
     if not valid_results:
@@ -688,8 +687,8 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
 
     def _run_many():
         results = []
-        # Use a small pool == gpu_cap to protect the single GPU
-        with ProcessPoolExecutor(max_workers=gpu_cap) as ex:
+        # Use ThreadPoolExecutor for GPU operations to avoid CUDA fork issues
+        with ThreadPoolExecutor(max_workers=gpu_cap) as ex:
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
                               (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs,
                                int(s.generate_state(1)[0])))
