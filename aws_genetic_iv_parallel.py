@@ -58,7 +58,7 @@ class Config:
         # Assume 2x hyperthreading, so physical cores = logical_cores / 2
         physical_cores = logical_cores // 2
         # Use ~50% of physical cores for outer workers to avoid oversubscription
-        return max(8, physical_cores // 2)
+        return 3
 
     @property
     def MAX_INNER_CPU_WORKERS(self) -> int:
@@ -67,13 +67,7 @@ class Config:
         physical_cores = logical_cores // 2
         # Target ~1.25x physical cores total to use hyperthreads efficiently
         target_total_workers = int(physical_cores * 4)
-        return max(2, target_total_workers // self.MAX_OUTER_WORKERS)
-
-    @property
-    def MAX_INNER_GPU_WORKERS(self) -> int:
-        """How many model trainings to feed to ONE GPU in parallel"""
-        # T4 is happy with 2–4 concurrent trainings; tune if needed
-        return 16
+        return 2
 
     # Backward compatibility
     @property
