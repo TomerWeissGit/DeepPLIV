@@ -36,6 +36,14 @@ from botocore.exceptions import NoCredentialsError
 from core.trainer import DeepPLIV
 import torch
 
+# CRITICAL: Set multiprocessing start method to 'spawn' for CUDA compatibility
+# CUDA cannot work with 'fork' (Linux default), must use 'spawn'
+if __name__ != "__main__":
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
+
 # Optimize PyTorch threading for parallel workers
 # Let each process use a couple CPU threads for matmul/BLAS
 torch.set_num_threads(2)
@@ -1490,6 +1498,13 @@ class ParallelExecutor:
 
 if __name__ == "__main__":
     import sys
+
+    # CRITICAL: Set multiprocessing start method to 'spawn' for CUDA compatibility
+    # This MUST be done before any CUDA operations or process creation
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
 
     config = Config()
 
