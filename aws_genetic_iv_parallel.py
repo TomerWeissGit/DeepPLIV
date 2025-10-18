@@ -612,12 +612,15 @@ def _run_single_nn_wrapper(args):
 
 async def ensemble_nn(df_x, df_y, M, max_workers, device_id=None, **nn_kwargs):
     """
-    Run multiple NN trainings using ProcessPoolExecutor
+    Run multiple NN trainings using ThreadPoolExecutor (GPU) or ProcessPoolExecutor (CPU)
+    Threads share GPU context and CUDA ops release GIL for parallel execution
     """
     loop = asyncio.get_running_loop()
 
     def _run_many():
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        # Use ThreadPoolExecutor for GPU (shared CUDA context), ProcessPoolExecutor for CPU
+        executor_class = ThreadPoolExecutor if GPU_COUNT > 0 else ProcessPoolExecutor
+        with executor_class(max_workers=max_workers) as ex:
             futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, device_id)) for _ in range(M)]
             return [f.result() for f in as_completed(futs)]
 
@@ -684,14 +687,17 @@ def _bootstrap_ensemble_sample_wrapper(args):
 
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, device_id=None, **nn_kwargs):
     """
-    Bootstrap CI for ensemble NN using ProcessPoolExecutor
+    Bootstrap CI for ensemble NN using ThreadPoolExecutor (GPU) or ProcessPoolExecutor (CPU)
+    Threads share GPU context and CUDA ops release GIL for parallel execution
     """
     loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
     seeds = np.random.SeedSequence().spawn(B)
 
     def _run_many():
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        # Use ThreadPoolExecutor for GPU (shared CUDA context), ProcessPoolExecutor for CPU
+        executor_class = ThreadPoolExecutor if GPU_COUNT > 0 else ProcessPoolExecutor
+        with executor_class(max_workers=max_workers) as ex:
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
                               (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, device_id,
                                int(s.generate_state(1)[0])))
