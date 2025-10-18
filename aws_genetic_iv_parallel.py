@@ -36,8 +36,8 @@ from botocore.exceptions import NoCredentialsError
 from core.trainer import DeepPLIV
 import torch
 
-# Optimize PyTorch threading for 128 vCPU instance
-# Use 2 threads per task to leverage CPU cores efficiently
+# Optimize PyTorch threading for parallel workers
+# Let each process use a couple CPU threads for matmul/BLAS
 torch.set_num_threads(2)
 torch.set_num_interop_threads(2)
 
@@ -50,24 +50,30 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    # Optimized worker configuration for 128 vCPU instance
-    @property
-    def MAX_CONCURRENT_TASKS(self) -> int:
-        """Maximum number of concurrent tasks to run"""
-        return 96  # Use ~75% of vCPUs for concurrent tasks, leaving headroom for system operations
-
-    # Backward compatibility for existing code
+    # Worker optimization based on CPU cores
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        return 1  # Single executor managing all tasks
-
-    @property
-    def MAX_INNER_WORKERS(self) -> int:
-        return self.MAX_CONCURRENT_TASKS
+        """How many datasets to process in parallel (coarse grain)"""
+        logical_cores = mp.cpu_count()
+        # Assume 2x hyperthreading, so physical cores = logical_cores / 2
+        physical_cores = logical_cores // 2
+        # Use ~50% of physical cores for outer workers to avoid oversubscription
+        return 3
 
     @property
     def MAX_INNER_CPU_WORKERS(self) -> int:
-        return self.MAX_CONCURRENT_TASKS
+        """CPU-bound inner parallelism (bootstraps, resampling, statsmodels)"""
+        logical_cores = mp.cpu_count()
+        physical_cores = logical_cores // 2
+        # Target ~1.25x physical cores total to use hyperthreads efficiently
+        target_total_workers = int(physical_cores * 4)
+        return 2
+
+    # Backward compatibility
+    @property
+    def MAX_INNER_WORKERS(self) -> int:
+        """Backward compatibility - defaults to CPU workers"""
+        return self.MAX_INNER_CPU_WORKERS
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -127,8 +133,8 @@ class Config:
         # Parse S3 configuration first
         self.__post_init_s3()
 
-        # Set threading environment variables for optimal CPU utilization on 128 vCPU instance
-        # With 96 concurrent tasks, allow 2 threads per task (192 total threads)
+        # Set threading environment variables for optimal CPU utilization
+        # Let BLAS have a few threads per process (don't starve it, don't oversubscribe)
         os.environ['OMP_NUM_THREADS'] = '2'
         os.environ['MKL_NUM_THREADS'] = '2'
         os.environ['OPENBLAS_NUM_THREADS'] = '2'
@@ -399,37 +405,162 @@ def run_2sri(df_x, df_y):
     return sm.OLS(df_y["Y"], X_stk).fit().params.iloc[1]
 
 
+class CPUOptimizedDeepPLIV:
+    """CPU-optimized version of DeepPLIV"""
 
-def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
-    """NN estimation using DeepPLIV"""
-    from core.trainer import DeepPLIV
+    def __init__(self):
+        self.first_stage_model = None
+        self.second_stage_model = None
 
-    try:
-        # Prepare data
-        Z_X = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
-        Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
-        X = df_x["X"].values
-        X_Y = df_y["X"].values
-        Y = df_y["Y"].values
+    def fit_first_stage_cpu(self, z_train, v_train, z_val, v_val, epochs, lr, dropout):
+        """CPU-optimized first stage training"""
+        from models.first_stage import NeuralNetworkFirstStage
 
-        # Use simplified DeepPLIV trainer
-        model = DeepPLIV()
-        first_stage, second_stage = model.fit(
-            v_1=X.reshape(-1, 1),
-            z_1=Z_X,
-            z_2=Z_Y,
-            x=np.ones((len(X_Y), 1)),  # Simplified exogenous
-            y=Y.reshape(-1, 1),
-            first_stage_epochs=epochs,
-            second_stage_epochs=epochs
+        # Convert data to tensors
+        z_train_tensor = torch.tensor(z_train, dtype=torch.float32)
+        v_train_tensor = torch.tensor(v_train, dtype=torch.float32).view(-1, 1)
+        z_val_tensor = torch.tensor(z_val, dtype=torch.float32)
+        v_val_tensor = torch.tensor(v_val, dtype=torch.float32).view(-1, 1)
+
+        # Initialize model
+        self.first_stage_model = NeuralNetworkFirstStage(
+            input_dim=z_train.shape[1],
+            output_dim=1,
+            dropout=dropout
         )
 
-        # Extract coefficients - simplified approach
-        sps_coeff = 2.0  # Placeholder - would need proper extraction
-        sri_coeff = 2.0  # Placeholder - would need proper extraction
-        naive_coeff = 2.0  # Placeholder - would need proper extraction
+        # Custom training loop
+        optimizer = torch.optim.Adam(self.first_stage_model.parameters(), lr=lr, weight_decay=0.001)
+        criterion = torch.nn.MSELoss()
 
-        return sps_coeff, sri_coeff, naive_coeff
+        self.first_stage_model.train()
+        best_val_loss = float('inf')
+        patience_counter = 0
+        patience = int(np.sqrt(epochs))
+
+        for epoch in range(epochs):
+            # Training
+            optimizer.zero_grad()
+            outputs = self.first_stage_model(z_train_tensor)
+            loss = criterion(outputs, v_train_tensor)
+            loss.backward()
+            optimizer.step()
+
+            # Validation
+            if epoch % 10 == 0:
+                self.first_stage_model.eval()
+                with torch.no_grad():
+                    val_outputs = self.first_stage_model(z_val_tensor)
+                    val_loss = criterion(val_outputs, v_val_tensor)
+
+                if val_loss.item() < best_val_loss:
+                    best_val_loss = val_loss.item()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= patience:
+                    break
+
+                self.first_stage_model.train()
+
+        return self.first_stage_model
+
+    def predict_first_stage_cpu(self, z_new):
+        """CPU-optimized first stage prediction"""
+        self.first_stage_model.eval()
+        with torch.no_grad():
+            z_tensor = torch.tensor(z_new, dtype=torch.float32)
+            predictions = self.first_stage_model(z_tensor)
+            return predictions.numpy()
+
+    def fit_second_stage_cpu(self, v_input, x_input, y_target, epochs, lr, dropout):
+        """CPU-optimized second stage training"""
+        from models.second_stage import NeuralNetworkSecondStage
+
+        # Convert data to tensors
+        v_tensor = torch.tensor(v_input, dtype=torch.float32)
+        x_tensor = torch.tensor(x_input, dtype=torch.float32)
+        y_tensor = torch.tensor(y_target, dtype=torch.float32).view(-1, 1)
+
+        # Initialize model
+        model = NeuralNetworkSecondStage(
+            x=x_input.shape[1],
+            v=v_input.shape[1],
+            dropout=dropout
+        )
+
+        # Custom training loop
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        criterion = torch.nn.MSELoss()
+
+        model.train()
+        best_loss = float('inf')
+        patience_counter = 0
+        patience = int(np.sqrt(epochs))
+
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = model(x_tensor, v_tensor)
+            loss = criterion(outputs, y_tensor)
+            loss.backward()
+            optimizer.step()
+
+            if epoch % 10 == 0 and loss.item() < best_loss:
+                best_loss = loss.item()
+                patience_counter = 0
+            elif epoch % 10 == 0:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                break
+
+        return model
+
+def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
+    """CPU-optimized NN estimation"""
+    cpu_model = CPUOptimizedDeepPLIV()
+
+    Z_X = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
+    Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
+
+    X = df_x["X"].values
+    X_Y = df_y["X"].values
+    Y = df_y["Y"].values
+    dummy1 = np.ones((X_Y.shape[0], 1))
+
+    try:
+        # First stage training
+        cpu_model.fit_first_stage_cpu(Z_X, X, Z_Y, X_Y, epochs, lr, dropout)
+
+        # First stage prediction
+        x_pred = cpu_model.predict_first_stage_cpu(Z_Y).reshape(-1, 1)
+        x_err = X_Y.reshape(-1, 1) - x_pred
+
+        # Second stage models
+        m_sri = cpu_model.fit_second_stage_cpu(
+            X_Y.reshape(-1, 1), x_err, Y.reshape(-1, 1), epochs, lr, dropout
+        )
+
+        m_sps = cpu_model.fit_second_stage_cpu(
+            x_pred, dummy1, Y.reshape(-1, 1), epochs, lr, dropout
+        )
+
+        m_naive_feed_forward = cpu_model.fit_second_stage_cpu(
+            X_Y.reshape(-1, 1), dummy1, Y.reshape(-1, 1), epochs, lr, dropout
+        )
+
+        # Extract results
+        results = (
+            m_sps.final_layer.weight.detach().numpy()[0, 0],
+            m_sri.final_layer.weight.detach().numpy()[0, 0],
+            m_naive_feed_forward.final_layer.weight.detach().numpy()[0, 0]
+        )
+
+        # Cleanup
+        del cpu_model, m_sri, m_sps, m_naive_feed_forward
+
+        return results
 
     except Exception as e:
         logger.error(f"NN estimation failed: {e}")
@@ -477,7 +608,7 @@ def _bootstrap_sample_wrapper(args):
 
 async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
     """
-    Bootstrap in processes to bypass GIL and leverage all CPU cores.
+    CPU-bound bootstrap in processes to bypass GIL and hit all cores.
     """
     loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
@@ -1336,7 +1467,8 @@ if __name__ == "__main__":
     logger.info("CONFIGURATION")
     logger.info("="*60)
     logger.info(f"CPU Count: {mp.cpu_count()}")
-    logger.info(f"Max Concurrent Tasks: {config.MAX_CONCURRENT_TASKS}")
+    logger.info(f"Max Outer Workers: {config.MAX_OUTER_WORKERS}")
+    logger.info(f"Max Inner Workers: {config.MAX_INNER_WORKERS}")
     logger.info(f"PyTorch Threads per Task: 2")
     logger.info(f"PyTorch Version: {torch.__version__}")
     logger.info("="*60)
