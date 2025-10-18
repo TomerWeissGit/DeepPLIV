@@ -49,6 +49,9 @@ if __name__ != "__main__":
 torch.set_num_threads(2)
 torch.set_num_interop_threads(2)
 
+# Multi-GPU setup
+def get_gpu_count() -> int:
+    return torch.cuda.device_count() if torch.cuda.is_available() else 0
 
 # Configuration
 @dataclass
@@ -58,7 +61,6 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    MAX_OUTER_WORKERS = 4
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -114,6 +116,21 @@ class Config:
     GAMMA_U_VALUES: List[float] = None
     BETA_U_VALUES: List[float] = None
 
+    @property
+    def MAX_WORKERS(self) -> int:
+        cpu_count = mp.cpu_count()
+        return cpu_count
+
+    # >>> ADD these two properties inside the class <<<
+    @property
+    def MAX_OUTER_WORKERS(self) -> int:
+        gc = get_gpu_count()
+        return gc if gc > 0 else 4
+
+    @property
+    def MAX_INNER_WORKERS(self) -> int:
+        return 5 if get_gpu_count() > 0 else 30
+
     def __post_init__(self):
         # Parse S3 configuration first
         self.__post_init_s3()
@@ -154,9 +171,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Multi-GPU setup
-def get_gpu_count() -> int:
-    return torch.cuda.device_count() if torch.cuda.is_available() else 0
 
 @property
 def MAX_OUTER_WORKERS(self) -> int:
