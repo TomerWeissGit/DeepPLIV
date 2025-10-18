@@ -50,23 +50,21 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    # Optimized worker configuration for 128 vCPU instance
+    # Multi-GPU worker configuration for g5.12xlarge (4 GPUs)
     @property
     def MAX_OUTER_WORKERS(self) -> int:
-        """How many datasets to process in parallel (coarse grain)"""
-        return 4  # Process 4 datasets concurrently
+        """How many datasets to process in parallel (one per GPU)"""
+        return GPU_COUNT if GPU_COUNT > 0 else 4  # One worker per GPU
 
-    @property
-    def MAX_INNER_CPU_WORKERS(self) -> int:
-        """CPU-bound inner parallelism (bootstraps, resampling, ensemble NN training)"""
-        # With 4 outer workers, use 30 inner workers each = 120 total concurrent tasks
-        return 30
-
-    # Backward compatibility
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        """Backward compatibility - defaults to CPU workers"""
-        return self.MAX_INNER_CPU_WORKERS
+        """GPU/CPU-bound inner parallelism per worker (ensemble NN training, bootstraps)"""
+        if GPU_COUNT > 0:
+            # With 4 GPUs, each can handle 50 concurrent NN trainings
+            return 50
+        else:
+            # CPU fallback: 30 workers per outer worker
+            return 30
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -161,6 +159,30 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Multi-GPU setup
+def setup_multi_gpu():
+    """Configure multi-GPU devices and log GPU information"""
+    if torch.cuda.is_available():
+        gpu_count = torch.cuda.device_count()
+        devices = [torch.device(f"cuda:{i}") for i in range(gpu_count)]
+
+        logger.info(f"GPU available: {gpu_count} GPUs detected")
+        for i in range(gpu_count):
+            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"  GPU {i} memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
+
+        # Set memory growth to avoid OOM
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+
+        return devices, gpu_count
+    else:
+        logger.warning("No GPU acceleration available, falling back to CPU")
+        return [torch.device("cpu")], 0
+
+# Global GPU variables
+DEVICES, GPU_COUNT = setup_multi_gpu()
 
 # Global parameters (loaded from pickle)
 gamma_j1 = None
@@ -398,29 +420,40 @@ def run_2sri(df_x, df_y):
     return sm.OLS(df_y["Y"], X_stk).fit().params.iloc[1]
 
 
-class CPUOptimizedDeepPLIV:
-    """CPU-optimized version of DeepPLIV"""
+class MultiGPUDeepPLIV:
+    """Multi-GPU optimized version of DeepPLIV with device assignment"""
 
-    def __init__(self):
+    def __init__(self, device_id=None):
+        """
+        Initialize with specific GPU device
+        :param device_id: GPU device index (0-3) or None for CPU
+        """
+        if device_id is not None and GPU_COUNT > 0:
+            self.device = DEVICES[device_id]
+            self.device_id = device_id
+        else:
+            self.device = torch.device("cpu")
+            self.device_id = None
+
         self.first_stage_model = None
         self.second_stage_model = None
 
-    def fit_first_stage_cpu(self, z_train, v_train, z_val, v_val, epochs, lr, dropout):
-        """CPU-optimized first stage training"""
+    def fit_first_stage(self, z_train, v_train, z_val, v_val, epochs, lr, dropout):
+        """GPU/CPU-optimized first stage training"""
         from models.first_stage import NeuralNetworkFirstStage
 
-        # Convert data to tensors
-        z_train_tensor = torch.tensor(z_train, dtype=torch.float32)
-        v_train_tensor = torch.tensor(v_train, dtype=torch.float32).view(-1, 1)
-        z_val_tensor = torch.tensor(z_val, dtype=torch.float32)
-        v_val_tensor = torch.tensor(v_val, dtype=torch.float32).view(-1, 1)
+        # Move data to device
+        z_train_tensor = torch.tensor(z_train, dtype=torch.float32, device=self.device)
+        v_train_tensor = torch.tensor(v_train, dtype=torch.float32, device=self.device).view(-1, 1)
+        z_val_tensor = torch.tensor(z_val, dtype=torch.float32, device=self.device)
+        v_val_tensor = torch.tensor(v_val, dtype=torch.float32, device=self.device).view(-1, 1)
 
-        # Initialize model
+        # Initialize model on device
         self.first_stage_model = NeuralNetworkFirstStage(
             input_dim=z_train.shape[1],
             output_dim=1,
             dropout=dropout
-        )
+        ).to(self.device)
 
         # Custom training loop
         optimizer = torch.optim.Adam(self.first_stage_model.parameters(), lr=lr, weight_decay=0.001)
@@ -459,29 +492,29 @@ class CPUOptimizedDeepPLIV:
 
         return self.first_stage_model
 
-    def predict_first_stage_cpu(self, z_new):
-        """CPU-optimized first stage prediction"""
+    def predict_first_stage(self, z_new):
+        """GPU/CPU-optimized first stage prediction"""
         self.first_stage_model.eval()
         with torch.no_grad():
-            z_tensor = torch.tensor(z_new, dtype=torch.float32)
+            z_tensor = torch.tensor(z_new, dtype=torch.float32, device=self.device)
             predictions = self.first_stage_model(z_tensor)
-            return predictions.numpy()
+            return predictions.cpu().numpy()
 
-    def fit_second_stage_cpu(self, v_input, x_input, y_target, epochs, lr, dropout):
-        """CPU-optimized second stage training"""
+    def fit_second_stage(self, v_input, x_input, y_target, epochs, lr, dropout):
+        """GPU/CPU-optimized second stage training"""
         from models.second_stage import NeuralNetworkSecondStage
 
-        # Convert data to tensors
-        v_tensor = torch.tensor(v_input, dtype=torch.float32)
-        x_tensor = torch.tensor(x_input, dtype=torch.float32)
-        y_tensor = torch.tensor(y_target, dtype=torch.float32).view(-1, 1)
+        # Move data to device
+        v_tensor = torch.tensor(v_input, dtype=torch.float32, device=self.device)
+        x_tensor = torch.tensor(x_input, dtype=torch.float32, device=self.device)
+        y_tensor = torch.tensor(y_target, dtype=torch.float32, device=self.device).view(-1, 1)
 
-        # Initialize model
+        # Initialize model on device
         model = NeuralNetworkSecondStage(
             x=x_input.shape[1],
             v=v_input.shape[1],
             dropout=dropout
-        )
+        ).to(self.device)
 
         # Custom training loop
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -510,9 +543,9 @@ class CPUOptimizedDeepPLIV:
 
         return model
 
-def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
-    """CPU-optimized NN estimation"""
-    cpu_model = CPUOptimizedDeepPLIV()
+def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout, device_id=None):
+    """Multi-GPU/CPU optimized NN estimation"""
+    model = MultiGPUDeepPLIV(device_id=device_id)
 
     Z_X = df_x[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
     Z_Y = df_y[[f"S1_{j + 1}" for j in range(K1)] + [f"S2_{j + 1}" for j in range(K2)]].values
@@ -524,48 +557,52 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout):
 
     try:
         # First stage training
-        cpu_model.fit_first_stage_cpu(Z_X, X, Z_Y, X_Y, epochs, lr, dropout)
+        model.fit_first_stage(Z_X, X, Z_Y, X_Y, epochs, lr, dropout)
 
         # First stage prediction
-        x_pred = cpu_model.predict_first_stage_cpu(Z_Y).reshape(-1, 1)
+        x_pred = model.predict_first_stage(Z_Y).reshape(-1, 1)
         x_err = X_Y.reshape(-1, 1) - x_pred
 
         # Second stage models
-        m_sri = cpu_model.fit_second_stage_cpu(
+        m_sri = model.fit_second_stage(
             X_Y.reshape(-1, 1), x_err, Y.reshape(-1, 1), epochs, lr, dropout
         )
 
-        m_sps = cpu_model.fit_second_stage_cpu(
+        m_sps = model.fit_second_stage(
             x_pred, dummy1, Y.reshape(-1, 1), epochs, lr, dropout
         )
 
-        m_naive_feed_forward = cpu_model.fit_second_stage_cpu(
+        m_naive_feed_forward = model.fit_second_stage(
             X_Y.reshape(-1, 1), dummy1, Y.reshape(-1, 1), epochs, lr, dropout
         )
 
-        # Extract results
+        # Extract results and move to CPU
         results = (
-            m_sps.final_layer.weight.detach().numpy()[0, 0],
-            m_sri.final_layer.weight.detach().numpy()[0, 0],
-            m_naive_feed_forward.final_layer.weight.detach().numpy()[0, 0]
+            m_sps.final_layer.weight.detach().cpu().numpy()[0, 0],
+            m_sri.final_layer.weight.detach().cpu().numpy()[0, 0],
+            m_naive_feed_forward.final_layer.weight.detach().cpu().numpy()[0, 0]
         )
 
         # Cleanup
-        del cpu_model, m_sri, m_sps, m_naive_feed_forward
+        del model, m_sri, m_sps, m_naive_feed_forward
+        if GPU_COUNT > 0 and device_id is not None:
+            torch.cuda.empty_cache()
 
         return results
 
     except Exception as e:
-        logger.error(f"NN estimation failed: {e}")
+        logger.error(f"NN estimation failed on device {device_id}: {e}")
+        if GPU_COUNT > 0 and device_id is not None:
+            torch.cuda.empty_cache()
         return None, None, None
 
 
 def _run_single_nn_wrapper(args):
     """Wrapper function for ProcessPoolExecutor compatibility"""
-    df_x, df_y, nn_kwargs = args
-    return estimating_sri_sps_with_nn(df_x, df_y, **nn_kwargs)
+    df_x, df_y, nn_kwargs, device_id = args
+    return estimating_sri_sps_with_nn(df_x, df_y, device_id=device_id, **nn_kwargs)
 
-async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
+async def ensemble_nn(df_x, df_y, M, max_workers, device_id=None, **nn_kwargs):
     """
     Run multiple NN trainings using ProcessPoolExecutor
     """
@@ -573,7 +610,7 @@ async def ensemble_nn(df_x, df_y, M, max_workers, **nn_kwargs):
 
     def _run_many():
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs)) for _ in range(M)]
+            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, device_id)) for _ in range(M)]
             return [f.result() for f in as_completed(futs)]
 
     results = await loop.run_in_executor(None, _run_many)
@@ -622,14 +659,14 @@ async def bootstrap_ci(base_func, df_x, df_y, B, ci_level, max_workers):
 
 def _bootstrap_ensemble_sample_wrapper(args):
     """Wrapper function for bootstrap ensemble sampling"""
-    (sps_e, sri_e, nv_e), df_x, df_y, n_x, n_y, nn_kwargs, seed = args
+    (sps_e, sri_e, nv_e), df_x, df_y, n_x, n_y, nn_kwargs, device_id, seed = args
     rng = np.random.default_rng(seed)
     idx_x = rng.integers(0, n_x, n_x)
     idx_y = rng.integers(0, n_y, n_y)
     dfx = df_x.iloc[idx_x].reset_index(drop=True)
     dfy = df_y.iloc[idx_y].reset_index(drop=True)
 
-    sps_b, sri_b, nv_b = estimating_sri_sps_with_nn(dfx, dfy, **nn_kwargs)
+    sps_b, sri_b, nv_b = estimating_sri_sps_with_nn(dfx, dfy, device_id=device_id, **nn_kwargs)
     return (
         sps_b, sri_b, nv_b,
         abs(sps_b - sps_e) if sps_b is not None else None,
@@ -637,7 +674,7 @@ def _bootstrap_ensemble_sample_wrapper(args):
         abs(nv_b  - nv_e ) if nv_b  is not None else None,
     )
 
-async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, **nn_kwargs):
+async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, device_id=None, **nn_kwargs):
     """
     Bootstrap CI for ensemble NN using ProcessPoolExecutor
     """
@@ -648,7 +685,7 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
     def _run_many():
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
-                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs,
+                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, device_id,
                                int(s.generate_state(1)[0])))
                     for s in seeds]
             return [f.result() for f in as_completed(futs)]
@@ -1077,14 +1114,19 @@ async def save_estimates_csv(s3_manager, csv_content: str, s3_key: str) -> bool:
 
 
 class AsyncWorker:
-    """Individual worker for processing datasets"""
+    """Individual worker for processing datasets with assigned GPU"""
 
-    def __init__(self, worker_id: int, config: Config, s3_manager: S3Manager):
+    def __init__(self, worker_id: int, config: Config, s3_manager: S3Manager, device_id: int = None):
         self.worker_id = worker_id
         self.config = config
         self.s3_manager = s3_manager
+        self.device_id = device_id
         self.processed_count = 0
-        logger.info(f"Worker {worker_id}: Initialized")
+
+        if device_id is not None and GPU_COUNT > 0:
+            logger.info(f"Worker {worker_id}: Initialized with GPU {device_id} ({torch.cuda.get_device_name(device_id)})")
+        else:
+            logger.info(f"Worker {worker_id}: Initialized (CPU mode)")
 
     async def process_single_dataset(self, task: Dict) -> Dict:
         """Process a single dataset task with nested parallelism"""
@@ -1120,7 +1162,8 @@ class AsyncWorker:
             try:
                 sps_nn, sri_nn, naive_nn, sps_raw, sri_raw, naive_raw = await ensemble_nn(
                     df_x, df_y, self.config.ENSEMBLE_SIZE,
-                    max_workers=self.config.MAX_INNER_WORKERS,  # NEW
+                    max_workers=self.config.MAX_INNER_WORKERS,
+                    device_id=self.device_id,  # Pass GPU assignment
                     epochs=self.config.EPOCHS,
                     lr=self.config.LEARNING_RATE,
                     dropout=self.config.DROPOUT
@@ -1154,7 +1197,8 @@ class AsyncWorker:
             try:
                 sps_ci, sri_ci, naive_ci, sps_boot_raw, sri_boot_raw, naive_boot_raw = await bootstrap_ci_ensemble(
                     (sps_nn, sri_nn, naive_nn), df_x, df_y, self.config.BOOTSTRAPS,
-                    max_workers=self.config.MAX_INNER_WORKERS,  # NEW
+                    max_workers=self.config.MAX_INNER_WORKERS,
+                    device_id=self.device_id,  # Pass GPU assignment
                     epochs=self.config.EPOCHS,
                     lr=self.config.LEARNING_RATE,
                     dropout=self.config.DROPOUT
@@ -1348,10 +1392,12 @@ class ParallelExecutor:
             for task in all_tasks:
                 await task_queue.put(task)
 
-            # Create workers
+            # Create workers with GPU assignments
             workers = []
-            for worker_id in range(self.config.MAX_OUTER_WORKERS):  # << use outer workers
-                worker = AsyncWorker(worker_id, self.config, s3_manager)
+            for worker_id in range(self.config.MAX_OUTER_WORKERS):
+                # Assign each worker to a GPU (worker_id maps to device_id)
+                device_id = worker_id if GPU_COUNT > 0 else None
+                worker = AsyncWorker(worker_id, self.config, s3_manager, device_id=device_id)
                 workers.append(worker)
 
             # Worker coroutines
@@ -1455,15 +1501,27 @@ if __name__ == "__main__":
         logger.error("AWS credentials not found. Please configure them.")
         sys.exit(1)
 
-    # Log CPU configuration
+    # Log configuration (GPU or CPU)
     logger.info("="*60)
-    logger.info("CONFIGURATION")
-    logger.info("="*60)
-    logger.info(f"CPU Count: {mp.cpu_count()}")
-    logger.info(f"Max Outer Workers: {config.MAX_OUTER_WORKERS}")
-    logger.info(f"Max Inner Workers: {config.MAX_INNER_WORKERS}")
-    logger.info(f"PyTorch Threads per Task: 2")
-    logger.info(f"PyTorch Version: {torch.__version__}")
+    if GPU_COUNT > 0:
+        logger.info("MULTI-GPU CONFIGURATION")
+        logger.info("="*60)
+        logger.info(f"GPUs Detected: {GPU_COUNT}")
+        for i in range(GPU_COUNT):
+            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB)")
+        logger.info(f"Max Outer Workers (GPU Workers): {config.MAX_OUTER_WORKERS}")
+        logger.info(f"Max Inner Workers (Models per GPU): {config.MAX_INNER_WORKERS}")
+        logger.info(f"Total GPU Concurrency: {config.MAX_OUTER_WORKERS} GPUs × {config.MAX_INNER_WORKERS} models = {config.MAX_OUTER_WORKERS * config.MAX_INNER_WORKERS} concurrent NN trainings")
+        logger.info(f"PyTorch Version: {torch.__version__}")
+        logger.info(f"CUDA Version: {torch.version.cuda}")
+    else:
+        logger.info("CPU-ONLY CONFIGURATION")
+        logger.info("="*60)
+        logger.info(f"CPU Count: {mp.cpu_count()}")
+        logger.info(f"Max Outer Workers: {config.MAX_OUTER_WORKERS}")
+        logger.info(f"Max Inner Workers: {config.MAX_INNER_WORKERS}")
+        logger.info(f"PyTorch Threads per Task: 2")
+        logger.info(f"PyTorch Version: {torch.__version__}")
     logger.info("="*60)
 
     if len(sys.argv) > 1:
