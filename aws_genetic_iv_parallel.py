@@ -50,24 +50,17 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    # Worker optimization based on CPU cores
+    # Optimized worker configuration for 128 vCPU instance
     @property
     def MAX_OUTER_WORKERS(self) -> int:
         """How many datasets to process in parallel (coarse grain)"""
-        logical_cores = mp.cpu_count()
-        # Assume 2x hyperthreading, so physical cores = logical_cores / 2
-        physical_cores = logical_cores // 2
-        # Use ~50% of physical cores for outer workers to avoid oversubscription
-        return 3
+        return 4  # Process 4 datasets concurrently
 
     @property
     def MAX_INNER_CPU_WORKERS(self) -> int:
-        """CPU-bound inner parallelism (bootstraps, resampling, statsmodels)"""
-        logical_cores = mp.cpu_count()
-        physical_cores = logical_cores // 2
-        # Target ~1.25x physical cores total to use hyperthreads efficiently
-        target_total_workers = int(physical_cores * 4)
-        return 2
+        """CPU-bound inner parallelism (bootstraps, resampling, ensemble NN training)"""
+        # With 4 outer workers, use 30 inner workers each = 120 total concurrent tasks
+        return 30
 
     # Backward compatibility
     @property
