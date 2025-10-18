@@ -58,21 +58,6 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
-    # Multi-GPU worker configuration for g5.12xlarge (4 GPUs)
-    @property
-    def MAX_OUTER_WORKERS(self) -> int:
-        """How many datasets to process in parallel (one per GPU)"""
-        return GPU_COUNT if GPU_COUNT > 0 else 4  # One worker per GPU
-
-    @property
-    def MAX_INNER_WORKERS(self) -> int:
-        """GPU/CPU-bound inner parallelism per worker (ensemble NN training, bootstraps)"""
-        if GPU_COUNT > 0:
-            # With 4 GPUs, each can handle 50 concurrent NN trainings
-            return 5
-        else:
-            # CPU fallback: 30 workers per outer worker
-            return 30
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
@@ -169,28 +154,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Multi-GPU setup
-def setup_multi_gpu():
-    """Configure multi-GPU devices and log GPU information"""
-    if torch.cuda.is_available():
-        gpu_count = torch.cuda.device_count()
-        devices = [torch.device(f"cuda:{i}") for i in range(gpu_count)]
+def get_gpu_count() -> int:
+    return torch.cuda.device_count() if torch.cuda.is_available() else 0
 
-        logger.info(f"GPU available: {gpu_count} GPUs detected")
-        for i in range(gpu_count):
-            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-            logger.info(f"  GPU {i} memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
+@property
+def MAX_OUTER_WORKERS(self) -> int:
+    gc = get_gpu_count()
+    return gc if gc > 0 else 4
 
-        # Set memory growth to avoid OOM
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
-
-        return devices, gpu_count
-    else:
-        logger.warning("No GPU acceleration available, falling back to CPU")
-        return [torch.device("cpu")], 0
-
-# Global GPU variables
-DEVICES, GPU_COUNT = setup_multi_gpu()
+@property
+def MAX_INNER_WORKERS(self) -> int:
+    return 5 if get_gpu_count() > 0 else 30
 
 # Global parameters (loaded from pickle)
 gamma_j1 = None
@@ -432,12 +406,9 @@ class MultiGPUDeepPLIV:
     """Multi-GPU optimized version of DeepPLIV with device assignment"""
 
     def __init__(self, device_id=None):
-        """
-        Initialize with specific GPU device
-        :param device_id: GPU device index (0-3) or None for CPU
-        """
-        if device_id is not None and GPU_COUNT > 0:
-            self.device = DEVICES[device_id]
+        if device_id is not None and torch.cuda.is_available():
+            # Use the physical device index directly
+            self.device = torch.device(f"cuda:{device_id}")
             self.device_id = device_id
         else:
             self.device = torch.device("cpu")
@@ -593,6 +564,7 @@ def estimating_sri_sps_with_nn(df_x, df_y, epochs, lr, dropout, device_id=None):
 
         # Cleanup
         del model, m_sri, m_sps, m_naive_feed_forward
+        GPU_COUNT = get_gpu_count()
         if GPU_COUNT > 0 and device_id is not None:
             torch.cuda.empty_cache()
 
@@ -619,8 +591,9 @@ async def ensemble_nn(df_x, df_y, M, max_workers, device_id=None, **nn_kwargs):
 
     def _run_many():
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            # Pass device_id=0 because each process sees only one GPU as cuda:0
-            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, 0 if GPU_COUNT > 0 else None)) for _ in range(M)]
+            gc = get_gpu_count()
+            use_dev = device_id if (gc > 0 and device_id is not None) else None
+            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, use_dev)) for _ in range(M)]
             return [f.result() for f in as_completed(futs)]
 
     results = await loop.run_in_executor(None, _run_many)
@@ -696,8 +669,10 @@ async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, 
     def _run_many():
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             # Pass device_id=0 because each process sees only one GPU as cuda:0
+            gc = get_gpu_count()
+            use_dev = device_id if (gc > 0 and device_id is not None) else None
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
-                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, 0 if GPU_COUNT > 0 else None,
+                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, use_dev,
                                int(s.generate_state(1)[0])))
                     for s in seeds]
             return [f.result() for f in as_completed(futs)]
@@ -1134,11 +1109,10 @@ class AsyncWorker:
         self.s3_manager = s3_manager
         self.device_id = device_id
         self.processed_count = 0
-
+        GPU_COUNT = get_gpu_count()
         # Set CUDA_VISIBLE_DEVICES so child processes see only this worker's GPU
         if device_id is not None and GPU_COUNT > 0:
-            os.environ['CUDA_VISIBLE_DEVICES'] = str(device_id)
-            logger.info(f"Worker {worker_id}: Initialized with GPU {device_id} ({torch.cuda.get_device_name(device_id)})")
+            logger.info(f"Worker {worker_id}: using physical GPU {device_id}")
             logger.info(f"Worker {worker_id}: Set CUDA_VISIBLE_DEVICES={device_id}")
         else:
             logger.info(f"Worker {worker_id}: Initialized (CPU mode)")
@@ -1409,6 +1383,7 @@ class ParallelExecutor:
 
             # Create workers with GPU assignments
             workers = []
+            GPU_COUNT = get_gpu_count()
             for worker_id in range(self.config.MAX_OUTER_WORKERS):
                 # Assign each worker to a GPU (worker_id maps to device_id)
                 device_id = worker_id if GPU_COUNT > 0 else None
@@ -1525,6 +1500,7 @@ if __name__ == "__main__":
 
     # Log configuration (GPU or CPU)
     logger.info("="*60)
+    GPU_COUNT = get_gpu_count()
     if GPU_COUNT > 0:
         logger.info("MULTI-GPU CONFIGURATION")
         logger.info("="*60)
