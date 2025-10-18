@@ -85,11 +85,11 @@ class NeuralNetworkSecondStage(nn.Module):
         # Convert numpy arrays to torch tensors
         x_tensor_train = torch.tensor(x_exog_train, dtype=torch.float32)
         v_tensor_train = torch.tensor(v_linear_train, dtype=torch.float32)
-        y_tensor_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
+        y_tensor_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
 
         x_tensor_validation = torch.tensor(x_validation, dtype=torch.float32)
         v_tensor_validation = torch.tensor(v_linear_validation, dtype=torch.float32)
-        y_tensor_validation = torch.tensor(y_validation, dtype=torch.float32).view(-1, 1)
+        y_tensor_validation = torch.tensor(y_validation, dtype=torch.float32).reshape(-1, 1)
 
         # Define the loss function and the optimizer
         criterion = nn.MSELoss()
