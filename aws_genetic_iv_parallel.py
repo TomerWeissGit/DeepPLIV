@@ -612,16 +612,15 @@ def _run_single_nn_wrapper(args):
 
 async def ensemble_nn(df_x, df_y, M, max_workers, device_id=None, **nn_kwargs):
     """
-    Run multiple NN trainings using ThreadPoolExecutor (GPU) or ProcessPoolExecutor (CPU)
-    Threads share GPU context and CUDA ops release GIL for parallel execution
+    Run multiple NN trainings using ProcessPoolExecutor
+    Each worker process sees only its assigned GPU via CUDA_VISIBLE_DEVICES
     """
     loop = asyncio.get_running_loop()
 
     def _run_many():
-        # Use ThreadPoolExecutor for GPU (shared CUDA context), ProcessPoolExecutor for CPU
-        executor_class = ThreadPoolExecutor if GPU_COUNT > 0 else ProcessPoolExecutor
-        with executor_class(max_workers=max_workers) as ex:
-            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, device_id)) for _ in range(M)]
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            # Pass device_id=0 because each process sees only one GPU as cuda:0
+            futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, 0 if GPU_COUNT > 0 else None)) for _ in range(M)]
             return [f.result() for f in as_completed(futs)]
 
     results = await loop.run_in_executor(None, _run_many)
@@ -687,19 +686,18 @@ def _bootstrap_ensemble_sample_wrapper(args):
 
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, device_id=None, **nn_kwargs):
     """
-    Bootstrap CI for ensemble NN using ThreadPoolExecutor (GPU) or ProcessPoolExecutor (CPU)
-    Threads share GPU context and CUDA ops release GIL for parallel execution
+    Bootstrap CI for ensemble NN using ProcessPoolExecutor
+    Each worker process sees only its assigned GPU via CUDA_VISIBLE_DEVICES
     """
     loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
     seeds = np.random.SeedSequence().spawn(B)
 
     def _run_many():
-        # Use ThreadPoolExecutor for GPU (shared CUDA context), ProcessPoolExecutor for CPU
-        executor_class = ThreadPoolExecutor if GPU_COUNT > 0 else ProcessPoolExecutor
-        with executor_class(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            # Pass device_id=0 because each process sees only one GPU as cuda:0
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
-                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, device_id,
+                              (ensemble_estimates, df_x, df_y, n_x, n_y, nn_kwargs, 0 if GPU_COUNT > 0 else None,
                                int(s.generate_state(1)[0])))
                     for s in seeds]
             return [f.result() for f in as_completed(futs)]
@@ -1137,8 +1135,11 @@ class AsyncWorker:
         self.device_id = device_id
         self.processed_count = 0
 
+        # Set CUDA_VISIBLE_DEVICES so child processes see only this worker's GPU
         if device_id is not None and GPU_COUNT > 0:
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(device_id)
             logger.info(f"Worker {worker_id}: Initialized with GPU {device_id} ({torch.cuda.get_device_name(device_id)})")
+            logger.info(f"Worker {worker_id}: Set CUDA_VISIBLE_DEVICES={device_id}")
         else:
             logger.info(f"Worker {worker_id}: Initialized (CPU mode)")
 
