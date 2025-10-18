@@ -58,6 +58,7 @@ class Config:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_BUCKET: str = None  # Will be parsed from S3_URI
     BASE_S3_PATH: str = None  # Will be parsed from S3_URI
+    MAX_OUTER_WORKERS = 4
 
     # Parse S3 URI to extract bucket and base path
     def __post_init_s3(self):
