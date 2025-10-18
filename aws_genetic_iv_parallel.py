@@ -69,7 +69,7 @@ class Config:
         """GPU/CPU-bound inner parallelism per worker (ensemble NN training, bootstraps)"""
         if GPU_COUNT > 0:
             # With 4 GPUs, each can handle 50 concurrent NN trainings
-            return 25
+            return 10
         else:
             # CPU fallback: 30 workers per outer worker
             return 30
