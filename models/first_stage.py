@@ -57,9 +57,9 @@ class NeuralNetworkFirstStage(nn.Module):
 
         # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
-        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+        y_tensor = torch.tensor(y, dtype=torch.float32).reshape(-1, 1)
         x_val_tensor = torch.tensor(validation_data[0], dtype=torch.float32)
-        y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).view(-1, 1)
+        y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).reshape(-1, 1)
 
         # Define the loss function and the optimizer
         criterion = nn.MSELoss()
