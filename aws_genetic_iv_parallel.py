@@ -129,7 +129,7 @@ class Config:
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        return 5 if get_gpu_count() > 0 else 30
+        return 7 if get_gpu_count() > 0 else 30
 
     def __post_init__(self):
         # Parse S3 configuration first
@@ -1316,6 +1316,53 @@ class ProgressTracker:
         self.s3_manager = s3_manager
         self.start_time = datetime.now()
 
+    async def rebuild_from_results(self) -> None:
+        """Rebuild checkpoint from existing result files in S3"""
+        logger.info("Rebuilding checkpoint from S3 result files...")
+
+        # List all result files
+        result_files = await self.s3_manager.list_objects('results/')
+        result_files = [f for f in result_files if f.endswith('_results.json')]
+
+        logger.info(f"Found {len(result_files)} result files in S3")
+
+        # Extract completed task keys from filenames
+        completed_tasks = []
+        for file_path in result_files:
+            # Parse: results/config_X/run_Y_results.json -> config_X_run_Y
+            parts = file_path.replace('results/', '').split('/')
+            if len(parts) == 2:
+                config_part = parts[0]  # e.g., "config_0"
+                run_part = parts[1].replace('_results.json', '')  # e.g., "run_5"
+                task_key = f"{config_part}_{run_part}"
+                completed_tasks.append(task_key)
+
+        completed_tasks.sort()
+
+        if not completed_tasks:
+            logger.info("No existing results found to rebuild from")
+            return
+
+        # Load existing checkpoint to preserve failed tasks and start_time
+        existing = await self.s3_manager.get_json('checkpoints/progress.json')
+
+        # Create updated checkpoint
+        checkpoint = {
+            'completed_tasks': completed_tasks,
+            'failed_tasks': existing.get('failed_tasks', []) if existing else [],
+            'start_time': existing.get('start_time', self.start_time.isoformat()) if existing else self.start_time.isoformat(),
+            'last_update': datetime.now().isoformat(),
+            'total_completed': len(completed_tasks),
+            'total_failed': len(existing.get('failed_tasks', [])) if existing else 0,
+            'rebuilt_at': datetime.now().isoformat(),
+            'rebuilt_from': 'S3 results scan'
+        }
+
+        # Save rebuilt checkpoint
+        await self.s3_manager.put_json(checkpoint, 'checkpoints/progress.json')
+
+        logger.info(f"Checkpoint rebuilt: {len(completed_tasks)} tasks recovered from results")
+
     async def load_checkpoint(self) -> Dict:
         """Load existing checkpoint from S3"""
         checkpoint = await self.s3_manager.get_json('checkpoints/progress.json')
@@ -1368,6 +1415,11 @@ class ParallelExecutor:
         async with S3Manager(self.config.S3_BUCKET, self.config.AWS_REGION, self.config.BASE_S3_PATH) as s3_manager:
             # Initialize progress tracker
             tracker = ProgressTracker(s3_manager)
+
+            # Rebuild checkpoint from existing results in S3
+            await tracker.rebuild_from_results()
+
+            # Load checkpoint (now includes recovered tasks)
             checkpoint = await tracker.load_checkpoint()
 
             # Load task manifest
