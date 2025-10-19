@@ -1459,8 +1459,7 @@ class ParallelExecutor:
 
             # Worker coroutines
             async def worker_loop(worker: AsyncWorker):
-                completed_tasks = []
-                failed_tasks = []
+                tasks_processed = 0
 
                 while True:
                     try:
@@ -1468,17 +1467,9 @@ class ParallelExecutor:
                         result = await worker.process_single_dataset(task)
 
                         if result is not None:
-                            completed_tasks.append(task['task_key'])
-                        else:
-                            failed_tasks.append(task['task_key'])
+                            tasks_processed += 1
 
                         task_queue.task_done()
-
-                        # Immediate checkpoint after every task
-                        await tracker.save_checkpoint(
-                            checkpoint['completed_tasks'] + completed_tasks,
-                            checkpoint['failed_tasks'] + failed_tasks
-                        )
 
                     except asyncio.TimeoutError:
                         break
@@ -1486,7 +1477,8 @@ class ParallelExecutor:
                         logger.error(f"Worker {worker.worker_id} error: {e}")
                         break
 
-                return completed_tasks, failed_tasks
+                logger.info(f"Worker {worker.worker_id} finished: {tasks_processed} tasks processed")
+                return tasks_processed
 
             # Start all workers as tasks
             worker_tasks = [asyncio.create_task(worker_loop(worker)) for worker in workers]
@@ -1511,21 +1503,14 @@ class ParallelExecutor:
             for task in worker_tasks:
                 task.cancel()
 
-            # Collect results from workers
-            all_completed = checkpoint['completed_tasks'].copy()
-            all_failed = checkpoint['failed_tasks'].copy()
-
+            # Collect worker task counts
             worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+            total_processed = 0
             for result in worker_results:
-                if isinstance(result, tuple):
-                    completed, failed = result
-                    all_completed.extend(completed)
-                    all_failed.extend(failed)
+                if isinstance(result, int):
+                    total_processed += result
 
-            # Final checkpoint
-            await tracker.save_checkpoint(all_completed, all_failed)
-
-            logger.info(f"Execution completed: {len(all_completed)} successful, {len(all_failed)} failed")
+            logger.info(f"Execution completed: {total_processed} tasks processed in this run")
 
     async def run_full_pipeline(self) -> None:
         """Run the complete pipeline: generate datasets + execute tasks"""
