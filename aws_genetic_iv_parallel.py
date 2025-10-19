@@ -599,13 +599,12 @@ def _run_single_nn_wrapper(args):
 
 async def ensemble_nn(df_x, df_y, M, max_workers, device_id=None, **nn_kwargs):
     """
-    Run multiple NN trainings using ProcessPoolExecutor
-    Each worker process sees only its assigned GPU via CUDA_VISIBLE_DEVICES
+    Run multiple NN trainings using ThreadPoolExecutor (threads share GPU context)
     """
     loop = asyncio.get_running_loop()
 
     def _run_many():
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
             gc = get_gpu_count()
             use_dev = device_id if (gc > 0 and device_id is not None) else None
             futs = [ex.submit(_run_single_nn_wrapper, (df_x, df_y, nn_kwargs, use_dev)) for _ in range(M)]
@@ -674,16 +673,14 @@ def _bootstrap_ensemble_sample_wrapper(args):
 
 async def bootstrap_ci_ensemble(ensemble_estimates, df_x, df_y, B, max_workers, device_id=None, **nn_kwargs):
     """
-    Bootstrap CI for ensemble NN using ProcessPoolExecutor
-    Each worker process sees only its assigned GPU via CUDA_VISIBLE_DEVICES
+    Bootstrap CI for ensemble NN using ThreadPoolExecutor (threads share GPU context)
     """
     loop = asyncio.get_running_loop()
     n_x, n_y = len(df_x), len(df_y)
     seeds = np.random.SeedSequence().spawn(B)
 
     def _run_many():
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            # Pass device_id=0 because each process sees only one GPU as cuda:0
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
             gc = get_gpu_count()
             use_dev = device_id if (gc > 0 and device_id is not None) else None
             futs = [ex.submit(_bootstrap_ensemble_sample_wrapper,
