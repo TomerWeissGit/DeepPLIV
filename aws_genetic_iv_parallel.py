@@ -129,7 +129,7 @@ class Config:
 
     @property
     def MAX_INNER_WORKERS(self) -> int:
-        return 10 if get_gpu_count() > 0 else 30
+        return 5 if get_gpu_count() > 0 else 30
 
     def __post_init__(self):
         # Parse S3 configuration first
