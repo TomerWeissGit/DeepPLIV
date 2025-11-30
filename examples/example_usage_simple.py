@@ -3,8 +3,8 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from typing_extensions import Literal
 
-from core.trainer import DeepPLIV
-from utils.helpers import spinner_decorator, save_to_pickle, plot_boxplot
+from deeppliv import DeepPLIV
+from deeppliv.utils import spinner_decorator, save_to_pickle, plot_boxplot
 
 
 class SimDataCreator:

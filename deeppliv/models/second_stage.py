@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 
-from utils.helpers import EarlyStopping, spinner_decorator
+from deeppliv.utils.helpers import EarlyStopping, spinner_decorator
 
 
 class NeuralNetworkSecondStage(nn.Module):

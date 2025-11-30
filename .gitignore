@@ -27,12 +27,19 @@ wheels/
 *.egg
 MANIFEST
 
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
 # PyTorch
 *.pth
 *.pt
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb
 
 # Data files
 *.pkl
@@ -63,3 +70,40 @@ checkpoints/
 # AWS
 .aws/credentials
 .aws/config
+
+# Example files (keep only the main 3)
+examples/example_genetic_iv_fig.py
+examples/example_interactions.py
+examples/example_usage_high_dimension.py
+examples/example_usage_high_dimension_with_confident_interval.py
+examples/ci_example/
+examples/deep_iv_sim/
+examples/deep_iv_sim_smaller_model/
+examples/high_dim_sim/
+examples/high_dim_sim_linear/
+examples/high_dim_sim_nonlinear/
+examples/fixed_effects/
+examples/simulation_interaction/
+examples/simulation_interaction_grid/
+examples/figures/
+examples/plots/
+examples/*.pkl
+examples/*.png
+examples/network_structure
+
+# Root level files to ignore
+Digraph.gv
+*.png
+analysis_notebook.ipynb
+check_s3.py
+debug_worker.py
+minimal_worker_test.py
+rebuild_checkpoint.py
+report_dynamo_export.sarif
+setup_cloudwatch.sh
+simple_test.py
+test_local.py
+Untitled.ipynb
+example_deepIV.ipynb
+CLAUDE.md
+PACKAGE_INFO.md

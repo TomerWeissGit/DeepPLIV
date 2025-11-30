@@ -1,7 +1,7 @@
 import numpy as np
 
-from models.first_stage import NeuralNetworkFirstStage
-from models.second_stage import NeuralNetworkSecondStage
+from deeppliv.models.first_stage import NeuralNetworkFirstStage
+from deeppliv.models.second_stage import NeuralNetworkSecondStage
 
 class DeepPLIV:
     def __init__(self):

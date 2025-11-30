@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
-from utils.helpers import EarlyStopping, spinner_decorator
+from deeppliv.utils.helpers import EarlyStopping, spinner_decorator
 import torch.optim as optim
 
 

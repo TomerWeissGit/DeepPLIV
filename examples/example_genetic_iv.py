@@ -8,7 +8,7 @@ from joblib import Parallel, delayed
 from scipy.stats import norm
 from sklearn.linear_model import LinearRegression
 
-from core.trainer import DeepPLIV
+from deeppliv import DeepPLIV
 
 
 # ---------------------

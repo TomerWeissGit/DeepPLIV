@@ -4,10 +4,10 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-from core.trainer import DeepPLIV
+from deeppliv import DeepPLIV
 from sklearn.preprocessing import StandardScaler
 from data_creation import SimDataCreatorDeepIV
-from utils.helpers import plot_boxplot
+from deeppliv.utils import plot_boxplot
 
 class NaiveSRISPSHighDimension:
     def __init__(self,
