@@ -45,7 +45,7 @@ class NeuralNetworkFirstStage(nn.Module):
                        y: np.array,
                        epochs: int,
                        learning_rate: float,
-                       validation_data: tuple = None,
+                       validation_data: tuple,
                        early_stopping_patience: int = None,
                        early_stopping_min_delta: float = 0.0,
                        print_every_x: int = 150) -> None:

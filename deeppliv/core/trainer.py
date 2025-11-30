@@ -53,17 +53,17 @@ class DeepPLIV:
                         v_1: np.array,
                         epochs_first_stage: int,
                         learning_rate_first_stage: float ,
+                        validation_data: tuple,
                         dropout: float = 0,
-                        validation_data: tuple = None,
-                        output_dim = 1) -> NeuralNetworkFirstStage:
+                        output_dim: int = 1) -> NeuralNetworkFirstStage:
         """
         Fit the DeepPLIV model.
         :param v_1: np.array, the dependent variable.
         :param z_1: np.array, the instrumental variable.
         :param epochs_first_stage: int, the number of epochs for training the first stage.
         :param learning_rate_first_stage: float, the learning rate for training the first stage.
+        :param validation_data: tuple, the validation data as (x_val, y_val).
         :param dropout: float, the dropout rate for the first stage.
-        :param validation_data: tuple, the validation data.
         :param output_dim: int, the output dimension of the first stage model.
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """

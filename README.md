@@ -1,4 +1,4 @@
-# DeepPLIV: Deep Partially Linear Instrumental Variable
+# DeepPLIV — Deep Partial Linear Model with Instrumental Variables
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -17,7 +17,7 @@ DeepPLIV is a Python package that implements a deep learning approach to causal 
 - Built on PyTorch for GPU acceleration
 
 This package implements the methodology from the paper:
-**"Causal Inference in Partially Linear Models with Instrumental Variables"** by Tomer Weiss & Malka Gorfine, 2024.
+**"Causal Inference in Partially Linear Models with Instrumental Variables"** by Tomer Weiss & Malka Gorfine, 2025.
 
 ## Installation
 
@@ -177,10 +177,10 @@ Get the estimated causal effect coefficient.
 If you use this package in your research, please cite:
 
 ```bibtex
-@article{weiss2024deeppliv,
+@article{weiss2025deeppliv,
   title={Causal Inference in Partially Linear Models with Instrumental Variables},
   author={Weiss, Tomer and Gorfine, Malka},
-  year={2024}
+  year={2025}
 }
 ```
 

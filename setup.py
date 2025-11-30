@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name='deeppliv',
-    version='0.1.0',
+    version='0.1.1',
     description='Neural network-based two-stage package for causal inference in partially-linear instrumental variable settings',
     long_description=long_description,
     long_description_content_type="text/markdown",
