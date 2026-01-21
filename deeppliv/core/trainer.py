@@ -31,7 +31,7 @@ class DeepPLIV:
         :param second_stage_learning_rate: the learning rate for training the second stage.
         :return:
         """
-        self.fit_first_stage(v_1, z_1, first_stage_epochs, first_stage_learning_rate, dropout=dropout)
+        self.fit_first_stage(z_1, v_1, first_stage_epochs, first_stage_learning_rate, dropout=dropout)
         v_hat = self.predict_first_stage(z_2)
         self.fit_second_stage(v_hat, x, y, second_stage_epochs, second_stage_learning_rate, dropout=dropout)
         return self.first_stage_model, self.second_stage_model

@@ -5,14 +5,15 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-from core.trainer import DeepPLIV
+from deeppliv.core.trainer import DeepPLIV
 from sklearn.preprocessing import StandardScaler
 from data_creation import SimDataCreatorHighDimension
-from utils.helpers import plot_boxplot
+from deeppliv.utils.helpers import plot_boxplot
 
 # Module-level globals to persist interaction structure across all simulations
 FIXED_CHOSEN_PAIRS = None
 FIXED_INTERACTION_EFFECTS = None
+
 
 def generate_random_pairs(k, n_pairs):
     pairs = []
@@ -22,6 +23,7 @@ def generate_random_pairs(k, n_pairs):
         if pair not in pairs:
             pairs.append(pair)
     return pairs
+
 
 # Initialize fixed interaction logic once (can also be replaced with file-based cache if needed)
 def initialize_fixed_interactions():
@@ -101,9 +103,9 @@ class NaiveSRISPSHighDimension:
 
         x = np.concatenate([self.x_2.reshape(-1, 1),
                             self.g.reshape(-1, 1),
-                           (self.x_2 * self.g).reshape(-1, 1),
+                            (self.x_2 * self.g).reshape(-1, 1),
                             x_error.reshape(-1, 1)],
-                           axis =1 )
+                           axis=1)
         model = LinearRegression()
         model.fit(x, self.y)
         return model.coef_
@@ -125,7 +127,7 @@ class NaiveSRISPSHighDimension:
                                                   epochs_first_stage=self.epochs,
                                                   learning_rate_first_stage=self.learning_rate,
                                                   dropout=self.dropout,
-                                                  validation_data = (g_iv_2, x_2))
+                                                  validation_data=(g_iv_2, x_2))
         x_predicted = first_stage_model.predict(g_iv_2).reshape(1, -1)
         x_error = self.x_2 - x_predicted
         x_predicted = x_predicted
@@ -142,25 +144,24 @@ class NaiveSRISPSHighDimension:
 
         mode_sri_coef = model_sri.final_layer.weight.detach().numpy()[:, 0]
 
-
         # SPS model
         x_exog = self.g.reshape(-1, 1)
 
         model_sps = model.fit_second_stage(x_predicted.reshape(-1, 1),
-                                          x_exog,
-                                          self.y.reshape(-1, 1),
-                                          epochs_second_stage=self.epochs,
-                                          learning_rate_second_stage=self.learning_rate,
-                                          dropout = self.dropout)
+                                           x_exog,
+                                           self.y.reshape(-1, 1),
+                                           epochs_second_stage=self.epochs,
+                                           learning_rate_second_stage=self.learning_rate,
+                                           dropout=self.dropout)
 
         model_sps_coef = model_sps.final_layer.weight.detach().numpy()[:, 0]
         # naive feed forward model
         model_nff = model.fit_second_stage(self.x_2.reshape(-1, 1),
-                                             x_exog,
-                                             self.y.reshape(-1, 1),
-                                             epochs_second_stage=self.epochs,
-                                             learning_rate_second_stage=self.learning_rate,
-                                             dropout=self.dropout)
+                                           x_exog,
+                                           self.y.reshape(-1, 1),
+                                           epochs_second_stage=self.epochs,
+                                           learning_rate_second_stage=self.learning_rate,
+                                           dropout=self.dropout)
         model_nff_coef = model_nff.final_layer.weight.detach().numpy()[:, 0]
 
         return model_sps_coef, mode_sri_coef, model_nff_coef
@@ -246,6 +247,7 @@ def run_high_dimension_genetic_simulation(num_simulations=10,
 
 from concurrent.futures import ProcessPoolExecutor
 
+
 def simulate_single_setting(n, beta_u, dropout, epochs, config):
     beta_1, gamma_u, m, p_thr, num_simulations, learning_rate, k, interaction, chosen_pairs, interaction_effects = config
 
@@ -268,6 +270,7 @@ def simulate_single_setting(n, beta_u, dropout, epochs, config):
 
     return (n, beta_u, df)
 
+
 def run_single_simulation(sim_id, n, beta_u, dropout, epochs, config):
     beta_1, gamma_u, m, p_thr, learning_rate, k, interaction, chosen_pairs, interaction_effects = config
 
@@ -289,6 +292,8 @@ def run_single_simulation(sim_id, n, beta_u, dropout, epochs, config):
     )
 
     return df
+
+
 def run_parallel_simulations_for_config(n, beta_u, dropout, epochs, config, num_simulations):
     from concurrent.futures import ProcessPoolExecutor
 
@@ -307,6 +312,7 @@ def run_parallel_simulations_for_config(n, beta_u, dropout, epochs, config, num_
 
 if __name__ == '__main__':
     import multiprocessing
+
     multiprocessing.set_start_method('spawn')  # for safety on MacOS/Windows
 
     _num_simulations = 8
@@ -334,7 +340,7 @@ if __name__ == '__main__':
             _dropout = 0.5
             _epochs = int((1.5 * 10 ** 7) / (_n // 2))
 
-            print(f"🚀 Running { _num_simulations } parallel simulations for n={_n}, beta_u={_beta_u}")
+            print(f"🚀 Running {_num_simulations} parallel simulations for n={_n}, beta_u={_beta_u}")
             df = run_parallel_simulations_for_config(
                 n=_n,
                 beta_u=_beta_u,
