@@ -54,11 +54,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_deep_iv_simulation import DeepIVData, psi_t  # noqa: E402
+from run_deep_iv_simulation import DeepIVData, psi_t, _regression_model  # noqa: E402
 
 from deeppliv import DeepPLIV  # noqa: E402
 
@@ -75,6 +75,7 @@ def sample_population(
     s_range: Sequence[float],
     beta_1: float,
     rng: np.random.Generator,
+    binary: bool = False,
 ) -> DeepIVData:
     """Draw a sample from the Hartford Deep IV DGP on continuous (t, s) ranges.
 
@@ -98,14 +99,20 @@ def sample_population(
     x_1 = scaler.fit_transform(x_1_raw.reshape(-1, 1))[:, 0] + eps_x_1
     x_2 = scaler.transform(x_2_raw.reshape(-1, 1))[:, 0] + eps_x_2
 
-    eps_y_2 = rng.normal(
-        loc=rho * eps_x_2,
-        scale=np.sqrt(1.0 - rho ** 2),
-        size=n2,
-    )
     y_struct = 100.0 + (10.0 + x_2) * s_2 * psi_t(t_2)
     y_struct = StandardScaler().fit_transform(y_struct.reshape(-1, 1))[:, 0]
-    y_2 = y_struct + beta_1 * x_2 + eps_y_2
+
+    if binary:
+        latent = y_struct + beta_1 * x_2 + rho * eps_x_2
+        prob = 1.0 / (1.0 + np.exp(-latent))
+        y_2 = rng.binomial(1, prob).astype(float)
+    else:
+        eps_y_2 = rng.normal(
+            loc=rho * eps_x_2,
+            scale=np.sqrt(1.0 - rho ** 2),
+            size=n2,
+        )
+        y_2 = y_struct + beta_1 * x_2 + eps_y_2
 
     return DeepIVData(
         z_1=z_1, t_1=t_1, x_1=x_1,
@@ -150,6 +157,54 @@ def compute_true_ame(
     y_res = data.y_2 - ybar[key]
     x_res = data.x_2 - xbar[key]
     return float((x_res * y_res).sum() / (x_res * x_res).sum())
+
+
+def compute_true_ame_binary(
+    t_range: Sequence[float],
+    s_range: Sequence[float],
+    beta_1: float,
+    n: int = 300_000,
+    K: int = 20,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """MC ground truth for the partial-linear logistic projection (log-odds AME).
+
+    Fits a logistic regression with K×K (s,t) cell fixed effects on a large
+    no-confounding sample — the exact analog of compute_true_ame for binary
+    outcomes. The coefficient on x is the population log-odds AME that logistic
+    2SRI and DeepPLIV-2SRI converge to.
+    """
+    from scipy.sparse import hstack as sp_hstack, csr_matrix as sp_csr
+
+    rng = rng or np.random.default_rng(0)
+    data = sample_population(
+        n=n, rho=0.0, t_range=t_range, s_range=s_range,
+        beta_1=beta_1, rng=rng, binary=True,
+    )
+    n2 = len(data.y_2)
+
+    def bin_idx(vals: np.ndarray, lo: float, hi: float) -> np.ndarray:
+        return np.clip(
+            ((vals - lo) / (hi - lo + 1e-12) * K).astype(int), 0, K - 1
+        )
+
+    si = bin_idx(data.s_2, *s_range)
+    ti = bin_idx(data.t_2, *t_range)
+    cell = si * K + ti
+
+    n_cells = K * K
+    cell_dummies = sp_csr(
+        (np.ones(n2), (np.arange(n2), cell)), shape=(n2, n_cells)
+    )
+    x_col = sp_csr(data.x_2.reshape(-1, 1))
+    X_feat = sp_hstack([x_col, cell_dummies], format="csr")
+
+    # fit_intercept=False: cell dummies already span the intercept
+    model = LogisticRegression(
+        penalty=None, solver="lbfgs", max_iter=1000, fit_intercept=False
+    )
+    model.fit(X_feat, data.y_2)
+    return float(model.coef_.ravel()[0])
 
 
 # ---------------------------------------------------------------------------
@@ -225,36 +280,45 @@ def _rmse(y_pred: np.ndarray, y_true: np.ndarray) -> float:
     return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
 
 
-def fit_eval_naive_ols(train: DeepIVData, test: DeepIVData) -> dict:
+def _get_predictions(model, X: np.ndarray, binary: bool) -> np.ndarray:
+    """Predicted probabilities (binary) or fitted values (continuous)."""
+    if binary:
+        return model.predict_proba(X)[:, 1]
+    return model.predict(X)
+
+
+def fit_eval_naive_ols(train: DeepIVData, test: DeepIVData, binary: bool = False) -> dict:
     X_tr = np.column_stack([train.x_2, train.s_2, train.t_2])
-    model = LinearRegression().fit(X_tr, train.y_2)
+    model = _regression_model(binary).fit(X_tr, train.y_2)
     X_te = np.column_stack([test.x_2, test.s_2, test.t_2])
-    y_pred = model.predict(X_te)
-    return dict(y_pred=y_pred, ame=float(model.coef_[0]), rmse=_rmse(y_pred, test.y_2))
+    y_pred = _get_predictions(model, X_te, binary)
+    return dict(y_pred=y_pred, ame=float(model.coef_.ravel()[0]), rmse=_rmse(y_pred, test.y_2))
 
 
 def fit_eval_linear_2sps_no_int(
     train: DeepIVData,
     test: DeepIVData,
     first: LinearRegression | None = None,
+    binary: bool = False,
 ) -> dict:
     """Linear 2SPS with no interaction feature and a naive linear first stage."""
     if first is None:
         first = _fit_linear_first_stage(train, oracle=False)
     x_hat_tr = _predict_linear_first_stage(first, train, oracle=False)
     X_tr = np.column_stack([x_hat_tr, train.s_2, train.t_2])
-    second = LinearRegression().fit(X_tr, train.y_2)
+    second = _regression_model(binary).fit(X_tr, train.y_2)
 
     x_hat_te = _predict_linear_first_stage(first, test, oracle=False)
     X_te = np.column_stack([x_hat_te, test.s_2, test.t_2])
-    y_pred = second.predict(X_te)
-    return dict(y_pred=y_pred, ame=float(second.coef_[0]), rmse=_rmse(y_pred, test.y_2))
+    y_pred = _get_predictions(second, X_te, binary)
+    return dict(y_pred=y_pred, ame=float(second.coef_.ravel()[0]), rmse=_rmse(y_pred, test.y_2))
 
 
 def fit_eval_linear_2sri_no_int(
     train: DeepIVData,
     test: DeepIVData,
     first: LinearRegression | None = None,
+    binary: bool = False,
 ) -> dict:
     """Linear 2SRI with no interaction feature and a naive linear first stage."""
     if first is None:
@@ -262,19 +326,20 @@ def fit_eval_linear_2sri_no_int(
     x_hat_tr = _predict_linear_first_stage(first, train, oracle=False)
     residual_tr = train.x_2 - x_hat_tr
     X_tr = np.column_stack([train.x_2, train.s_2, train.t_2, residual_tr])
-    second = LinearRegression().fit(X_tr, train.y_2)
+    second = _regression_model(binary).fit(X_tr, train.y_2)
 
     x_hat_te = _predict_linear_first_stage(first, test, oracle=False)
     residual_te = test.x_2 - x_hat_te
     X_te = np.column_stack([test.x_2, test.s_2, test.t_2, residual_te])
-    y_pred = second.predict(X_te)
-    return dict(y_pred=y_pred, ame=float(second.coef_[0]), rmse=_rmse(y_pred, test.y_2))
+    y_pred = _get_predictions(second, X_te, binary)
+    return dict(y_pred=y_pred, ame=float(second.coef_.ravel()[0]), rmse=_rmse(y_pred, test.y_2))
 
 
 def fit_eval_linear_2sps_oracle(
     train: DeepIVData,
     test: DeepIVData,
     first: LinearRegression | None = None,
+    binary: bool = False,
 ) -> dict:
     """Linear 2SPS with oracle psi_t in both stages."""
     if first is None:
@@ -282,19 +347,20 @@ def fit_eval_linear_2sps_oracle(
     x_hat_tr = _predict_linear_first_stage(first, train, oracle=True)
     J_tr = train.s_2 * psi_t(train.t_2)
     X_tr = np.column_stack([x_hat_tr, J_tr, J_tr * x_hat_tr])
-    second = LinearRegression().fit(X_tr, train.y_2)
+    second = _regression_model(binary).fit(X_tr, train.y_2)
 
     x_hat_te = _predict_linear_first_stage(first, test, oracle=True)
     J_te = test.s_2 * psi_t(test.t_2)
     X_te = np.column_stack([x_hat_te, J_te, J_te * x_hat_te])
-    y_pred = second.predict(X_te)
-    return dict(y_pred=y_pred, ame=float(second.coef_[0]), rmse=_rmse(y_pred, test.y_2))
+    y_pred = _get_predictions(second, X_te, binary)
+    return dict(y_pred=y_pred, ame=float(second.coef_.ravel()[0]), rmse=_rmse(y_pred, test.y_2))
 
 
 def fit_eval_linear_2sri_oracle(
     train: DeepIVData,
     test: DeepIVData,
     first: LinearRegression | None = None,
+    binary: bool = False,
 ) -> dict:
     """Linear 2SRI with oracle psi_t in both stages."""
     if first is None:
@@ -303,14 +369,14 @@ def fit_eval_linear_2sri_oracle(
     residual_tr = train.x_2 - x_hat_tr
     J_tr = train.s_2 * psi_t(train.t_2)
     X_tr = np.column_stack([train.x_2, J_tr, J_tr * train.x_2, residual_tr])
-    second = LinearRegression().fit(X_tr, train.y_2)
+    second = _regression_model(binary).fit(X_tr, train.y_2)
 
     x_hat_te = _predict_linear_first_stage(first, test, oracle=True)
     residual_te = test.x_2 - x_hat_te
     J_te = test.s_2 * psi_t(test.t_2)
     X_te = np.column_stack([test.x_2, J_te, J_te * test.x_2, residual_te])
-    y_pred = second.predict(X_te)
-    return dict(y_pred=y_pred, ame=float(second.coef_[0]), rmse=_rmse(y_pred, test.y_2))
+    y_pred = _get_predictions(second, X_te, binary)
+    return dict(y_pred=y_pred, ame=float(second.coef_.ravel()[0]), rmse=_rmse(y_pred, test.y_2))
 
 
 def fit_eval_deeppliv(
@@ -374,7 +440,10 @@ def fit_eval_deeppliv(
     with torch.no_grad():
         x_tensor = torch.tensor(linear_te.reshape(-1, 1), dtype=torch.float32)
         e_tensor = torch.tensor(exog_te_s, dtype=torch.float32)
-        y_pred = second_nn(e_tensor, x_tensor).numpy().reshape(-1)
+        raw = second_nn(e_tensor, x_tensor)
+        if second_nn.binary:
+            raw = torch.sigmoid(raw)
+        y_pred = raw.numpy().reshape(-1)
 
     ame = float(second_nn.final_layer.weight.detach().cpu().numpy()[0, 0])
     return dict(y_pred=y_pred, ame=ame, rmse=_rmse(y_pred, test.y_2))
@@ -407,20 +476,21 @@ def run_all_estimators(
     linear_first_naive: LinearRegression | None = None,
     linear_first_oracle: LinearRegression | None = None,
     nn_first: NNFirstStage | None = None,
+    binary: bool = False,
 ) -> dict:
     results: dict[str, dict] = {}
-    results["Naive OLS"] = fit_eval_naive_ols(train, test)
+    results["Naive OLS"] = fit_eval_naive_ols(train, test, binary=binary)
     results["Linear 2SPS"] = fit_eval_linear_2sps_no_int(
-        train, test, linear_first_naive
+        train, test, linear_first_naive, binary=binary
     )
     results["Linear 2SRI"] = fit_eval_linear_2sri_no_int(
-        train, test, linear_first_naive
+        train, test, linear_first_naive, binary=binary
     )
     results["Linear 2SPS (oracle)"] = fit_eval_linear_2sps_oracle(
-        train, test, linear_first_oracle
+        train, test, linear_first_oracle, binary=binary
     )
     results["Linear 2SRI (oracle)"] = fit_eval_linear_2sri_oracle(
-        train, test, linear_first_oracle
+        train, test, linear_first_oracle, binary=binary
     )
 
     if nn_first is None:
@@ -448,6 +518,7 @@ def run_same_pop_sweep(
     dropout: float,
     seed: int,
     label: str,
+    binary: bool = False,
 ) -> pd.DataFrame:
     master_rng = np.random.default_rng(seed)
     records: list[dict] = []
@@ -455,12 +526,12 @@ def run_same_pop_sweep(
         train_rng = np.random.default_rng(master_rng.integers(0, 2**31 - 1))
         test_rng = np.random.default_rng(master_rng.integers(0, 2**31 - 1))
         train = sample_population(
-            n=n, rho=rho, beta_1=beta_1, rng=train_rng, **pop_spec,
+            n=n, rho=rho, beta_1=beta_1, rng=train_rng, binary=binary, **pop_spec,
         )
         test = sample_population(
-            n=n, rho=rho, beta_1=beta_1, rng=test_rng, **pop_spec,
+            n=n, rho=rho, beta_1=beta_1, rng=test_rng, binary=binary, **pop_spec,
         )
-        results = run_all_estimators(train, test, epochs, lr, dropout)
+        results = run_all_estimators(train, test, epochs, lr, dropout, binary=binary)
         for method, res in results.items():
             records.append(
                 dict(
@@ -495,6 +566,7 @@ def run_cross_pop_sweep(
     dropout: float,
     seed: int,
     label: str,
+    binary: bool = False,
 ) -> pd.DataFrame:
     """Train first stage on `pop_train_spec`, fit second stage on `pop_target_spec`,
     evaluate test RMSE on an independent sample from `pop_target_spec`.
@@ -506,13 +578,13 @@ def run_cross_pop_sweep(
         train_B_rng = np.random.default_rng(master_rng.integers(0, 2**31 - 1))
         test_B_rng = np.random.default_rng(master_rng.integers(0, 2**31 - 1))
         train_A = sample_population(
-            n=n, rho=rho, beta_1=beta_1, rng=train_A_rng, **pop_train_spec,
+            n=n, rho=rho, beta_1=beta_1, rng=train_A_rng, binary=binary, **pop_train_spec,
         )
         train_B = sample_population(
-            n=n, rho=rho, beta_1=beta_1, rng=train_B_rng, **pop_target_spec,
+            n=n, rho=rho, beta_1=beta_1, rng=train_B_rng, binary=binary, **pop_target_spec,
         )
         test_B = sample_population(
-            n=n, rho=rho, beta_1=beta_1, rng=test_B_rng, **pop_target_spec,
+            n=n, rho=rho, beta_1=beta_1, rng=test_B_rng, binary=binary, **pop_target_spec,
         )
 
         # Precompute first stages on Pop A's training data.
@@ -527,6 +599,7 @@ def run_cross_pop_sweep(
             linear_first_naive=linear_first_naive,
             linear_first_oracle=linear_first_oracle,
             nn_first=nn_first,
+            binary=binary,
         )
         for method, res in results.items():
             records.append(

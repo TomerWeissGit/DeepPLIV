@@ -38,6 +38,7 @@ from run_deep_iv_simulation import DeepIVData, psi_t  # noqa: E402
 from run_population_ame_demo import (  # noqa: E402
     sample_population,
     compute_true_ame,
+    compute_true_ame_binary,
     _fit_linear_first_stage,
     _fit_nn_first_stage,
     _predict_linear_first_stage,
@@ -60,10 +61,10 @@ SETTINGS = {
     "no-overlap": dict(t_range=(0.0, 3.0), s_range=(5.0, 7.0)),
 }
 
-N_VALUES = [10_000, 20_000, 40_000]
+N_VALUES = [10_000, 20_000, 40_000, 80_000]
 NUM_SIMS = 50
 BETA_1 = -2.0
-RHO = 0.5
+DEFAULT_RHO = 0.5
 LR = 0.01
 
 METHODS_TO_RUN = [
@@ -79,7 +80,13 @@ METHODS_TO_RUN = [
 # ---------------------------------------------------------------------------
 
 
-def run_single_sim(n: int, sim_idx: int, cache_dir: str) -> pd.DataFrame:
+def run_single_sim(
+    n: int,
+    sim_idx: int,
+    cache_dir: str,
+    rho: float = DEFAULT_RHO,
+    binary: bool = False,
+) -> pd.DataFrame:
     """Run all 3 settings for one (n, sim_idx) pair. Cached per-sim."""
     cache_path = os.path.join(cache_dir, f"n{n}_sim{sim_idx:03d}.pkl")
     if os.path.exists(cache_path):
@@ -97,13 +104,15 @@ def run_single_sim(n: int, sim_idx: int, cache_dir: str) -> pd.DataFrame:
 
     # Target-population data (shared across all 3 settings).
     train_target = sample_population(
-        n=n, rho=RHO, beta_1=BETA_1,
+        n=n, rho=rho, beta_1=BETA_1,
         rng=np.random.default_rng(master_rng.integers(0, 2**31 - 1)),
+        binary=binary,
         **TARGET_POP,
     )
     test_target = sample_population(
-        n=n, rho=RHO, beta_1=BETA_1,
+        n=n, rho=rho, beta_1=BETA_1,
         rng=np.random.default_rng(master_rng.integers(0, 2**31 - 1)),
+        binary=binary,
         **TARGET_POP,
     )
 
@@ -115,8 +124,9 @@ def run_single_sim(n: int, sim_idx: int, cache_dir: str) -> pd.DataFrame:
             train_fs = train_target
         else:
             train_fs = sample_population(
-                n=n, rho=RHO, beta_1=BETA_1,
+                n=n, rho=rho, beta_1=BETA_1,
                 rng=np.random.default_rng(master_rng.integers(0, 2**31 - 1)),
+                binary=binary,
                 **fs_pop,
             )
 
@@ -126,9 +136,9 @@ def run_single_sim(n: int, sim_idx: int, cache_dir: str) -> pd.DataFrame:
         nn_fs = _fit_nn_first_stage(train_fs, epochs, LR, dropout)
 
         # Run estimators (second stage always on train_target, eval on test_target).
-        res_ols = fit_eval_naive_ols(train_target, test_target)
-        res_lin = fit_eval_linear_2sri_no_int(train_target, test_target, first=lin_fs_naive)
-        res_oracle = fit_eval_linear_2sri_oracle(train_target, test_target, first=lin_fs_oracle)
+        res_ols = fit_eval_naive_ols(train_target, test_target, binary=binary)
+        res_lin = fit_eval_linear_2sri_no_int(train_target, test_target, first=lin_fs_naive, binary=binary)
+        res_oracle = fit_eval_linear_2sri_oracle(train_target, test_target, first=lin_fs_oracle, binary=binary)
         res_nn = fit_eval_deeppliv(
             train_target, test_target, "2sri", epochs, LR, dropout, nn_fs,
         )
@@ -171,7 +181,7 @@ def print_summary(df: pd.DataFrame, ame_targets: dict) -> None:
         print(f"\n{'='*70}")
         print(f"n = {n}")
         print(f"{'='*70}")
-        for setting in ["same-pop", "partial-overlap", "no-overlap"]:
+        for setting in ["same-pop", "partial-overlap"]:
             sub = df[(df.n == n) & (df.setting == setting)]
             if sub.empty:
                 continue
@@ -194,30 +204,31 @@ def plot_ame_bias_figure(
     df: pd.DataFrame,
     ame_targets: dict,
     savepath: str | None = None,
+    binary: bool = False,
+    n_filter: list | None = None,
 ) -> None:
-    """3-column (one per n) × 3-row (one per setting) grid of AME boxplots."""
+    """2-column (one per setting) × n-row (one per n) grid of AME boxplots."""
     import seaborn as sns
     sns.set_style("whitegrid")
 
-    n_vals = sorted(df.n.unique())
-    settings = ["same-pop", "partial-overlap", "no-overlap"]
+    n_vals = sorted(n for n in df.n.unique() if n_filter is None or n in n_filter)
+    settings = ["same-pop", "partial-overlap"]
     setting_labels = {
         "same-pop": "Same population",
         "partial-overlap": "Partial overlap (train t~U(0,6))",
-        "no-overlap": "No overlap (train t~U(0,3))",
     }
     methods_plot = ["Naive OLS", "Linear 2SRI", "Linear 2SRI (oracle)", "DeepPLIV-2SRI"]
 
     fig, axes = plt.subplots(
-        len(settings), len(n_vals),
-        figsize=(6.5 * len(n_vals), 4.5 * len(settings)),
+        len(n_vals), len(settings),
+        figsize=(6.5 * len(settings), 4.5 * len(n_vals)),
         sharey=True,
     )
 
-    for row, setting in enumerate(settings):
-        target = ame_targets[setting]
-        for col, n in enumerate(n_vals):
+    for row, n in enumerate(n_vals):
+        for col, setting in enumerate(settings):
             ax = axes[row, col]
+            target = ame_targets[setting]
             sub = df[(df.n == n) & (df.setting == setting) & df.method.isin(methods_plot)]
             if sub.empty:
                 ax.text(0.5, 0.5, "no data", ha="center", va="center",
@@ -236,10 +247,10 @@ def plot_ame_bias_figure(
                 label=rf"AME $\theta^\star = {target:+.3f}$",
             )
             if row == 0:
-                ax.set_title(f"n = {n:,}", fontsize=13)
+                ax.set_title(setting_labels[setting], fontsize=13)
             if col == 0:
-                ax.set_ylabel(setting_labels[setting] + f"\n" + r"$\hat{\beta}_1$",
-                              fontsize=11)
+                coef_label = r"$\hat{\beta}_1$ (log-odds)" if binary else r"$\hat{\beta}_1$"
+                ax.set_ylabel(f"n = {n:,}\n" + coef_label, fontsize=11)
             else:
                 ax.set_ylabel("")
             ax.set_xlabel("")
@@ -248,11 +259,12 @@ def plot_ame_bias_figure(
                 lbl.set_horizontalalignment("right")
             ax.legend(loc="best", fontsize=8, framealpha=0.9)
 
+    outcome_note = " (binary outcome, log-odds scale)" if binary else ""
     fig.suptitle(
-        "AME estimates under same-population, partial-overlap, and no-overlap "
-        "first-stage training\n"
+        "AME estimates under same-population and partial-overlap "
+        f"first-stage training{outcome_note}\n"
         f"Target population: t ~ U(4,10), s ~ U(5,7), "
-        rf"$\rho = {RHO}$, $\beta_1 = {BETA_1}$",
+        rf"$\beta_1 = {BETA_1}$",
         fontsize=13,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.96])
@@ -266,25 +278,25 @@ def plot_bias_convergence(
     df: pd.DataFrame,
     ame_targets: dict,
     savepath: str | None = None,
+    binary: bool = False,
+    n_filter: list | None = None,
 ) -> None:
     """Line plot of |AME bias| vs n for each (setting, method) combination."""
-    settings = ["same-pop", "partial-overlap", "no-overlap"]
+    settings = ["same-pop", "partial-overlap"]
     methods_plot = ["Linear 2SRI", "DeepPLIV-2SRI"]
     markers = {"Linear 2SRI": "s", "DeepPLIV-2SRI": "o"}
     colors = {"Linear 2SRI": "#66c2a5", "DeepPLIV-2SRI": "#fc8d62"}
     linestyles = {
         "same-pop": "-",
         "partial-overlap": "--",
-        "no-overlap": ":",
     }
     setting_labels = {
         "same-pop": "Same pop",
         "partial-overlap": "Partial overlap",
-        "no-overlap": "No overlap",
     }
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    n_vals = sorted(df.n.unique())
+    n_vals = sorted(n for n in df.n.unique() if n_filter is None or n in n_filter)
 
     for setting in settings:
         target = ame_targets[setting]
@@ -295,7 +307,7 @@ def plot_bias_convergence(
                 if sub.empty:
                     biases.append(np.nan)
                 else:
-                    biases.append(abs(sub.ame.mean() - target))
+                    biases.append(abs(sub.ame.mean() - target) / abs(target) * 100)
             label = f"{method} / {setting_labels[setting]}"
             ax.plot(
                 n_vals, biases,
@@ -307,11 +319,13 @@ def plot_bias_convergence(
                 label=label,
             )
 
+    bias_label = r"|bias| (%)"
     ax.set_xlabel("Sample size (n)", fontsize=13)
-    ax.set_ylabel("|AME bias|", fontsize=13)
+    ax.set_ylabel(bias_label, fontsize=13)
+    outcome_note = " (binary outcome)" if binary else ""
     ax.set_title(
-        "AME bias convergence: Linear 2SRI vs DeepPLIV-2SRI\n"
-        "across sample sizes and first-stage training configurations",
+        f"Bias convergence: Linear 2SRI vs DeepPLIV-2SRI{outcome_note}\n"
+        "same-population and partial-overlap first-stage training",
         fontsize=13,
     )
     ax.legend(fontsize=9, ncol=2)
@@ -327,38 +341,50 @@ def plot_bias_convergence(
 def plot_rmse_figure(
     df: pd.DataFrame,
     savepath: str | None = None,
+    n_filter: list | None = None,
 ) -> None:
-    """RMSE comparison at the largest n, 3 panels (one per setting)."""
+    """n-row × 2-col grid of RMSE boxplots (one row per n, one col per setting)."""
     import seaborn as sns
     sns.set_style("whitegrid")
 
-    n_max = df.n.max()
-    sub = df[(df.n == n_max) & df.method.isin(METHODS_TO_RUN)]
-    settings = ["same-pop", "partial-overlap", "no-overlap"]
+    n_vals = sorted(n for n in df.n.unique() if n_filter is None or n in n_filter)
+    settings = ["same-pop", "partial-overlap"]
     setting_labels = {
         "same-pop": "Same population",
         "partial-overlap": "Partial overlap",
-        "no-overlap": "No overlap",
     }
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=True)
-    for ax, setting in zip(axes, settings):
-        ss = sub[sub.setting == setting]
-        sns.boxplot(
-            data=ss, x="method", y="rmse", order=METHODS_TO_RUN,
-            ax=ax, palette="Set2",
-        )
-        ax.set_title(setting_labels[setting], fontsize=12)
-        ax.set_xlabel("")
-        ax.tick_params(axis="x", rotation=20)
-        for lbl in ax.get_xticklabels():
-            lbl.set_horizontalalignment("right")
-    axes[0].set_ylabel("Test RMSE", fontsize=13)
-    fig.suptitle(
-        f"Test-set RMSE at n = {n_max:,}",
-        fontsize=13,
+    fig, axes = plt.subplots(
+        len(n_vals), len(settings),
+        figsize=(6.5 * len(settings), 4.5 * len(n_vals)),
+        sharey=True,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    for row, n in enumerate(n_vals):
+        for col, setting in enumerate(settings):
+            ax = axes[row, col]
+            ss = df[(df.n == n) & (df.setting == setting) & df.method.isin(METHODS_TO_RUN)]
+            if ss.empty:
+                ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                        transform=ax.transAxes)
+                continue
+            sns.boxplot(
+                data=ss, x="method", y="rmse", order=METHODS_TO_RUN,
+                ax=ax, palette="Set2",
+            )
+            if row == 0:
+                ax.set_title(setting_labels[setting], fontsize=13)
+            if col == 0:
+                ax.set_ylabel(f"n = {n:,}\nTest RMSE", fontsize=11)
+            else:
+                ax.set_ylabel("")
+            ax.set_xlabel("")
+            ax.tick_params(axis="x", rotation=20)
+            for lbl in ax.get_xticklabels():
+                lbl.set_horizontalalignment("right")
+
+    fig.suptitle("Test-set RMSE by sample size and first-stage training", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     if savepath:
         fig.savefig(savepath, dpi=200, bbox_inches="tight")
         print(f"  Saved RMSE figure to {savepath}")
@@ -374,23 +400,37 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-workers", type=int, default=2,
                         help="Number of parallel workers (default 2).")
-    parser.add_argument("--cache-dir", default="cross_pop_cache",
-                        help="Directory for per-sim pickle caches.")
+    parser.add_argument("--cache-dir", default=None,
+                        help="Directory for per-sim pickle caches (default: cross_pop_cache_rho{rho}).")
+    parser.add_argument("--rho", type=float, default=DEFAULT_RHO,
+                        help=f"Endogeneity strength (default {DEFAULT_RHO}).")
     parser.add_argument("--thesis-gfx-dir", default=None,
                         help="Copy final figures to this directory.")
     parser.add_argument("--num-sims", type=int, default=NUM_SIMS)
+    parser.add_argument("--binary", action="store_true", default=False,
+                        help="Use binary outcome (logistic DGP). Default: continuous.")
     args = parser.parse_args()
 
+    if args.cache_dir is None:
+        outcome_tag = "binary" if args.binary else "continuous"
+        args.cache_dir = f"cross_pop_cache_rho{args.rho}_{outcome_tag}"
     os.makedirs(args.cache_dir, exist_ok=True)
 
-    # Compute AME targets once.
-    print("Computing MC AME targets...")
-    ame_targets = {}
-    for setting_name in SETTINGS:
-        ame_targets[setting_name] = compute_true_ame(
-            **TARGET_POP, beta_1=BETA_1, n=1_500_000,
-        )
-    print(f"  AME target (all settings share same target pop): {ame_targets['same-pop']:+.4f}")
+    # AME targets: binary outcomes have no AME vs structural tension — the target
+    # is simply beta_1 on the log-odds scale. Continuous outcomes require MC.
+    if args.binary:
+        print("Computing MC log-odds AME target (binary, cell fixed-effects logistic)...")
+        ame_target_val = compute_true_ame_binary(**TARGET_POP, beta_1=BETA_1)
+        ame_targets = {name: ame_target_val for name in SETTINGS}
+        print(f"  Log-odds AME target (all settings): {ame_target_val:+.4f}")
+    else:
+        print("Computing MC AME targets...")
+        ame_targets = {}
+        for setting_name in SETTINGS:
+            ame_targets[setting_name] = compute_true_ame(
+                **TARGET_POP, beta_1=BETA_1, n=1_500_000,
+            )
+        print(f"  AME target (all settings share same target pop): {ame_targets['same-pop']:+.4f}")
 
     # Build task list: (n, sim_idx) pairs.
     tasks = [
@@ -413,7 +453,7 @@ if __name__ == "__main__":
 
         with ProcessPoolExecutor(max_workers=args.max_workers) as pool:
             futures = {
-                pool.submit(run_single_sim, n, sim_idx, args.cache_dir): (n, sim_idx)
+                pool.submit(run_single_sim, n, sim_idx, args.cache_dir, args.rho, args.binary): (n, sim_idx)
                 for n, sim_idx in tasks
             }
             done_count = cached
@@ -445,9 +485,11 @@ if __name__ == "__main__":
     print("\nGenerating figures...")
     fig_dir = args.cache_dir
     plot_ame_bias_figure(df, ame_targets,
-                         savepath=os.path.join(fig_dir, "cross_pop_ame.png"))
+                         savepath=os.path.join(fig_dir, "cross_pop_ame.png"),
+                         binary=args.binary)
     plot_bias_convergence(df, ame_targets,
-                          savepath=os.path.join(fig_dir, "cross_pop_convergence.png"))
+                          savepath=os.path.join(fig_dir, "cross_pop_convergence.png"),
+                          binary=args.binary)
     plot_rmse_figure(df,
                      savepath=os.path.join(fig_dir, "cross_pop_rmse.png"))
 

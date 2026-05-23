@@ -19,6 +19,7 @@ class NeuralNetworkSecondStage(nn.Module):
         :param v: int, the dimension of the second input.
         """
         super(NeuralNetworkSecondStage, self).__init__()
+        self.binary = False  # set automatically in train_new_data when y is binary
 
         # First network (deep neural network) for the first input
         self.deep_net = nn.Sequential(
@@ -71,6 +72,9 @@ class NeuralNetworkSecondStage(nn.Module):
         :param print_every_x: int, print the loss every x epochs.
         :param batch_size: int, the batch size for training.
         """
+        # Detect binary outcome once and store for use in predict().
+        self.binary = bool(np.all((y == 0) | (y == 1)))
+
         # batch size setting
         if not batch_size:
             batch_size = 128 if y.shape[0] < 10000 else 256
@@ -91,8 +95,8 @@ class NeuralNetworkSecondStage(nn.Module):
         v_tensor_validation = torch.tensor(v_linear_validation, dtype=torch.float32)
         y_tensor_validation = torch.tensor(y_validation, dtype=torch.float32).view(-1, 1)
 
-        # Define the loss function and the optimizer
-        criterion = nn.MSELoss()
+        # Use BCE (numerically stable, expects raw logits) for binary outcomes.
+        criterion = nn.BCEWithLogitsLoss() if self.binary else nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
         # Initialize early stopping
@@ -147,8 +151,10 @@ class NeuralNetworkSecondStage(nn.Module):
 
         # Disable gradient computation
         with torch.no_grad():
-            # Forward pass
+            # Forward pass produces raw logits; apply sigmoid for binary outcomes.
             predictions = self(x_new_tensor, v_new_tensor)
+            if self.binary:
+                predictions = torch.sigmoid(predictions)
 
         # Convert predictions to numpy array and return
         return predictions.numpy()

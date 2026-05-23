@@ -56,7 +56,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 from deeppliv import DeepPLIV
@@ -124,6 +124,7 @@ class DeepIVDGP:
         rho: float = 0.5,
         rng: np.random.Generator | None = None,
         standardize_nuisance: bool = True,
+        binary: bool = False,
     ):
         if not 0.0 <= rho < 1.0:
             raise ValueError(f"rho must lie in [0, 1); got {rho}.")
@@ -133,6 +134,7 @@ class DeepIVDGP:
         self.rho = float(rho)
         self.rng = rng if rng is not None else np.random.default_rng()
         self.standardize_nuisance = bool(standardize_nuisance)
+        self.binary = bool(binary)
 
     def sample(self) -> DeepIVData:
         rng = self.rng
@@ -159,15 +161,21 @@ class DeepIVDGP:
             x_2 = x_2_raw + eps_x_2
 
         # Second-stage structural block: 100 + (10 + x) * s * psi_t.
-        eps_y_2 = rng.normal(
-            loc=self.rho * eps_x_2,
-            scale=np.sqrt(1.0 - self.rho ** 2),
-            size=self.n2,
-        )
         y_struct = 100.0 + (10.0 + x_2) * s_2 * psi_t(t_2)
         if self.standardize_nuisance:
             y_struct = StandardScaler().fit_transform(y_struct.reshape(-1, 1))[:, 0]
-        y_2 = y_struct + self.beta_1 * x_2 + eps_y_2
+
+        if self.binary:
+            latent = y_struct + self.beta_1 * x_2 + self.rho * eps_x_2
+            prob = 1.0 / (1.0 + np.exp(-latent))
+            y_2 = rng.binomial(1, prob).astype(float)
+        else:
+            eps_y_2 = rng.normal(
+                loc=self.rho * eps_x_2,
+                scale=np.sqrt(1.0 - self.rho ** 2),
+                size=self.n2,
+            )
+            y_2 = y_struct + self.beta_1 * x_2 + eps_y_2
 
         return DeepIVData(
             z_1=z_1, t_1=t_1, x_1=x_1,
@@ -197,29 +205,34 @@ def _linear_second_stage_features(
     return np.column_stack([x, s, t, interaction])
 
 
-def estimate_naive_ols(data: DeepIVData) -> float:
+def _regression_model(binary: bool):
+    """Linear or logistic (no regularization) second-stage model."""
+    return LogisticRegression(penalty=None) if binary else LinearRegression()
+
+
+def estimate_naive_ols(data: DeepIVData, binary: bool = False) -> float:
     features = _linear_second_stage_features(data.x_2, data.s_2, data.t_2)
-    coef = LinearRegression().fit(features, data.y_2).coef_
-    return float(coef[0])
+    model = _regression_model(binary).fit(features, data.y_2)
+    return float(model.coef_.ravel()[0])
 
 
-def estimate_2sps_linear(data: DeepIVData) -> float:
+def estimate_2sps_linear(data: DeepIVData, binary: bool = False) -> float:
     first = LinearRegression().fit(_iv_inputs(data.z_1, data.t_1), data.x_1)
     x_hat = first.predict(_iv_inputs(data.z_2, data.t_2))
     features = _linear_second_stage_features(x_hat, data.s_2, data.t_2)
-    coef = LinearRegression().fit(features, data.y_2).coef_
-    return float(coef[0])
+    model = _regression_model(binary).fit(features, data.y_2)
+    return float(model.coef_.ravel()[0])
 
 
-def estimate_2sri_linear(data: DeepIVData) -> float:
+def estimate_2sri_linear(data: DeepIVData, binary: bool = False) -> float:
     first = LinearRegression().fit(_iv_inputs(data.z_1, data.t_1), data.x_1)
     x_hat = first.predict(_iv_inputs(data.z_2, data.t_2))
     residual = data.x_2 - x_hat
     features = np.column_stack(
         [_linear_second_stage_features(data.x_2, data.s_2, data.t_2), residual]
     )
-    coef = LinearRegression().fit(features, data.y_2).coef_
-    return float(coef[0])
+    model = _regression_model(binary).fit(features, data.y_2)
+    return float(model.coef_.ravel()[0])
 
 
 def _deep_first_stage(
@@ -347,6 +360,7 @@ def run_deep_iv_cell(
     seed: int | None = 0,
     cache_dir: str | None = None,
     standardize_nuisance: bool = True,
+    binary: bool = False,
 ) -> pd.DataFrame:
     """Run the full estimator comparison for one (n, rho) configuration.
 
@@ -356,9 +370,10 @@ def run_deep_iv_cell(
     """
     if cache_dir is not None:
         os.makedirs(cache_dir, exist_ok=True)
+        outcome_tag = "_binary" if binary else ""
         cache_path = os.path.join(
             cache_dir,
-            f"deep_iv_n{n}_rho{rho}_k{num_simulations}_beta{beta_1}.pkl",
+            f"deep_iv_n{n}_rho{rho}_k{num_simulations}_beta{beta_1}{outcome_tag}.pkl",
         )
         if os.path.exists(cache_path):
             return pd.read_pickle(cache_path)
@@ -378,13 +393,14 @@ def run_deep_iv_cell(
             rho=rho,
             rng=np.random.default_rng(master_rng.integers(0, 2**31 - 1)),
             standardize_nuisance=standardize_nuisance,
+            binary=binary,
         )
         data = dgp.sample()
 
         estimates: dict[str, float] = {
-            "Naive Regression": estimate_naive_ols(data),
-            "2SPS": estimate_2sps_linear(data),
-            "2SRI": estimate_2sri_linear(data),
+            "Naive Regression": estimate_naive_ols(data, binary=binary),
+            "2SPS": estimate_2sps_linear(data, binary=binary),
+            "2SRI": estimate_2sri_linear(data, binary=binary),
         }
         estimates.update(
             estimate_deeppliv(
@@ -438,18 +454,19 @@ def run_grid(
 
 
 if __name__ == "__main__":
-    # Smoke test: a single small cell so you can verify the script end-to-end
-    # before launching the full grid. Switch to the commented block below for
-    # the full thesis grid.
-    df = run_deep_iv_cell(
-        n=10000,
-        rho=0.5,
-        num_simulations=5,
-        seed=0,
-        cache_dir="deep_iv_sim_results",
-    )
-    print("\nMean estimate by method:")
-    print(df.groupby("method")["value"].agg(["mean", "std", "count"]))
+    # Smoke test: run both continuous and binary outcomes side-by-side to
+    # confirm the binary path produces sensible log-odds estimates near beta_1.
+    for outcome, binary_flag in [("continuous", False), ("binary", True)]:
+        print(f"\n=== {outcome.capitalize()} outcome (true beta_1 = -2.0) ===")
+        df = run_deep_iv_cell(
+            n=10000,
+            rho=0.5,
+            num_simulations=5,
+            seed=0,
+            binary=binary_flag,
+            cache_dir="deep_iv_sim_results",
+        )
+        print(df.groupby("method")["value"].agg(["mean", "std", "count"]))
 
     # Full grid (uncomment to run):
     # _N_VALUES = [2000, 10000, 20000, 40000]
