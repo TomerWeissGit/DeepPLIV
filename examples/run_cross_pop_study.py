@@ -221,7 +221,7 @@ def plot_ame_bias_figure(
 
     fig, axes = plt.subplots(
         len(n_vals), len(settings),
-        figsize=(6.5 * len(settings), 4.5 * len(n_vals)),
+        figsize=(7.5, 4.0 * len(n_vals)),
         sharey=True,
     )
 
@@ -281,56 +281,50 @@ def plot_bias_convergence(
     binary: bool = False,
     n_filter: list | None = None,
 ) -> None:
-    """Line plot of |AME bias| vs n for each (setting, method) combination."""
+    """Two-panel line plot of |AME bias| vs n, one panel per setting."""
     settings = ["same-pop", "partial-overlap"]
+    setting_labels = {
+        "same-pop": "Same population",
+        "partial-overlap": "Partial overlap (train t~U(0,6))",
+    }
     methods_plot = ["Linear 2SRI", "DeepPLIV-2SRI"]
     markers = {"Linear 2SRI": "s", "DeepPLIV-2SRI": "o"}
     colors = {"Linear 2SRI": "#66c2a5", "DeepPLIV-2SRI": "#fc8d62"}
-    linestyles = {
-        "same-pop": "-",
-        "partial-overlap": "--",
-    }
-    setting_labels = {
-        "same-pop": "Same pop",
-        "partial-overlap": "Partial overlap",
-    }
 
-    fig, ax = plt.subplots(figsize=(10, 6))
     n_vals = sorted(n for n in df.n.unique() if n_filter is None or n in n_filter)
+    outcome_note = " (binary outcome)" if binary else ""
+    bias_label = r"|AME bias| (log-odds)" if binary else "|AME bias|"
 
-    for setting in settings:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+
+    for ax, setting in zip(axes, settings):
         target = ame_targets[setting]
         for method in methods_plot:
             biases = []
             for n in n_vals:
                 sub = df[(df.n == n) & (df.setting == setting) & (df.method == method)]
-                if sub.empty:
-                    biases.append(np.nan)
-                else:
-                    biases.append(abs(sub.ame.mean() - target) / abs(target) * 100)
-            label = f"{method} / {setting_labels[setting]}"
+                biases.append(np.nan if sub.empty else abs(sub.ame.mean() - target))
             ax.plot(
                 n_vals, biases,
                 marker=markers[method],
                 color=colors[method],
-                linestyle=linestyles[setting],
+                linestyle="-",
                 linewidth=2,
                 markersize=8,
-                label=label,
+                label=method,
             )
+        ax.set_title(setting_labels[setting], fontsize=13)
+        ax.set_xlabel("Sample size (n)", fontsize=12)
+        ax.set_xticks(n_vals)
+        ax.set_xticklabels([f"{n:,}" for n in n_vals])
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.4)
 
-    bias_label = r"|bias| (%)"
-    ax.set_xlabel("Sample size (n)", fontsize=13)
-    ax.set_ylabel(bias_label, fontsize=13)
-    outcome_note = " (binary outcome)" if binary else ""
-    ax.set_title(
-        f"Bias convergence: Linear 2SRI vs DeepPLIV-2SRI{outcome_note}\n"
-        "same-population and partial-overlap first-stage training",
+    axes[0].set_ylabel(bias_label, fontsize=12)
+    fig.suptitle(
+        f"AME bias convergence: Linear 2SRI vs DeepPLIV-2SRI{outcome_note}",
         fontsize=13,
     )
-    ax.legend(fontsize=9, ncol=2)
-    ax.set_xticks(n_vals)
-    ax.set_xticklabels([f"{n:,}" for n in n_vals])
     fig.tight_layout()
     if savepath:
         fig.savefig(savepath, dpi=200, bbox_inches="tight")
@@ -343,48 +337,35 @@ def plot_rmse_figure(
     savepath: str | None = None,
     n_filter: list | None = None,
 ) -> None:
-    """n-row × 2-col grid of RMSE boxplots (one row per n, one col per setting)."""
+    """1-row × 2-col RMSE boxplots at the largest n in n_filter."""
     import seaborn as sns
     sns.set_style("whitegrid")
 
     n_vals = sorted(n for n in df.n.unique() if n_filter is None or n in n_filter)
+    n_show = max(n_vals)
     settings = ["same-pop", "partial-overlap"]
     setting_labels = {
         "same-pop": "Same population",
         "partial-overlap": "Partial overlap",
     }
 
-    fig, axes = plt.subplots(
-        len(n_vals), len(settings),
-        figsize=(6.5 * len(settings), 4.5 * len(n_vals)),
-        sharey=True,
-    )
-
-    for row, n in enumerate(n_vals):
-        for col, setting in enumerate(settings):
-            ax = axes[row, col]
-            ss = df[(df.n == n) & (df.setting == setting) & df.method.isin(METHODS_TO_RUN)]
-            if ss.empty:
-                ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                        transform=ax.transAxes)
-                continue
-            sns.boxplot(
-                data=ss, x="method", y="rmse", order=METHODS_TO_RUN,
-                ax=ax, palette="Set2",
-            )
-            if row == 0:
-                ax.set_title(setting_labels[setting], fontsize=13)
-            if col == 0:
-                ax.set_ylabel(f"n = {n:,}\nTest RMSE", fontsize=11)
-            else:
-                ax.set_ylabel("")
-            ax.set_xlabel("")
-            ax.tick_params(axis="x", rotation=20)
-            for lbl in ax.get_xticklabels():
-                lbl.set_horizontalalignment("right")
-
-    fig.suptitle("Test-set RMSE by sample size and first-stage training", fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
+    for ax, setting in zip(axes, settings):
+        ss = df[(df.n == n_show) & (df.setting == setting) & df.method.isin(METHODS_TO_RUN)]
+        if ss.empty:
+            continue
+        sns.boxplot(
+            data=ss, x="method", y="rmse", order=METHODS_TO_RUN,
+            ax=ax, palette="Set2",
+        )
+        ax.set_title(setting_labels[setting], fontsize=13)
+        ax.set_xlabel("")
+        ax.tick_params(axis="x", rotation=20)
+        for lbl in ax.get_xticklabels():
+            lbl.set_horizontalalignment("right")
+    axes[0].set_ylabel("Test RMSE", fontsize=13)
+    fig.suptitle(f"Test-set RMSE at n = {n_show:,}", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     if savepath:
         fig.savefig(savepath, dpi=200, bbox_inches="tight")
         print(f"  Saved RMSE figure to {savepath}")
