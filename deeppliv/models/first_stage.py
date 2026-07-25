@@ -55,40 +55,28 @@ class NeuralNetworkFirstStage(nn.Module):
         batch_size = 128 if y.shape[0] < 10000 else 256
         early_stopping_patience = early_stopping_patience if early_stopping_patience else int(np.sqrt(epochs))
 
-        # Convert numpy arrays to torch tensors
         x_tensor = torch.tensor(x, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
         x_val_tensor = torch.tensor(validation_data[0], dtype=torch.float32)
         y_val_tensor = torch.tensor(validation_data[1], dtype=torch.float32).view(-1, 1)
 
-        # Define the loss function and the optimizer
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learning_rate, weight_decay=0.001, betas=(0.9, 0.999), eps=1e-08)
-
-        # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
 
-        # Create dataset and DataLoader
         dataset = TensorDataset(x_tensor, y_tensor)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=False)
 
-        # Training loop
         for epoch in range(epochs):
-            self.train()  # Set the model to training mode
-
+            self.train()
             for x_batch, y_batch in dataloader:
-
-                # Forward pass
                 outputs = self(x_batch)
                 loss = criterion(outputs, y_batch)
-
-                # Backward pass and optimization
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            # Validation loop (run after each epoch)
-            self.eval()  # Set the model to evaluation mode
+            self.eval()
             with torch.no_grad():
                 val_outputs = self(x_val_tensor)
                 val_loss = criterion(val_outputs, y_val_tensor)
@@ -107,16 +95,8 @@ class NeuralNetworkFirstStage(nn.Module):
         """
         Predict the outcome for new input data.
         """
-        # Convert numpy array to torch tensor
-        x_new_tensor = torch.tensor(x_new, dtype=torch.float32).clone().detach().requires_grad_(False)
-
-        # Set the model to evaluation mode
+        x_new_tensor = torch.tensor(x_new, dtype=torch.float32)
         self.eval()
-
-        # Disable gradient computation
         with torch.no_grad():
-            # Forward pass
             predictions = self(x_new_tensor)
-
-        # Convert predictions to numpy array and return
         return predictions.numpy()

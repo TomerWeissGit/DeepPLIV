@@ -52,10 +52,11 @@ class DeepPLIV:
                         z_1: np.array,
                         v_1: np.array,
                         epochs_first_stage: int,
-                        learning_rate_first_stage: float ,
+                        learning_rate_first_stage: float,
                         validation_data: tuple,
                         dropout: float = 0,
-                        output_dim: int = 1) -> NeuralNetworkFirstStage:
+                        output_dim: int = 1,
+                        early_stopping_min_delta: float = 0.0) -> NeuralNetworkFirstStage:
         """
         Fit the DeepPLIV model.
         :param v_1: np.array, the dependent variable.
@@ -65,19 +66,22 @@ class DeepPLIV:
         :param validation_data: tuple, the validation data as (x_val, y_val).
         :param dropout: float, the dropout rate for the first stage.
         :param output_dim: int, the output dimension of the first stage model.
+        :param early_stopping_min_delta: float, minimum improvement to reset patience counter.
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
-
         self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1], output_dim=output_dim,
                                                          dropout=dropout)
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,
-                                              validation_data=validation_data)
+                                              validation_data=validation_data,
+                                              early_stopping_min_delta=early_stopping_min_delta)
         return self.first_stage_model
 
     def fit_second_stage(self, v_hat: np.array, x: np.array, y: np.array,
                          epochs_second_stage: int,
                          learning_rate_second_stage: float,
-                         dropout: float) -> NeuralNetworkSecondStage:
+                         dropout: float,
+                         method: str = None,
+                         early_stopping_min_delta: float = 0.0) -> NeuralNetworkSecondStage:
         """
         Fit the second stage of the DeepPLIV model.
         :param v_hat: np.array, the dependent variable prediction.
@@ -86,13 +90,25 @@ class DeepPLIV:
         :param dropout: float, the dropout rate for the second stage.
         :param epochs_second_stage: int, the number of epochs for training the second stage.
         :param learning_rate_second_stage: float, the learning rate for training the second stage.
+        :param method: str, the IV method ('2sri' or '2sps'). If '2sps' and y is binary, raises ValueError.
+        :param early_stopping_min_delta: float, minimum improvement to reset patience counter.
         """
+        is_binary = bool(np.all((y == 0) | (y == 1)))
+        if method == "2sps" and is_binary:
+            raise ValueError(
+                "2SPS is inconsistent for binary outcomes. In a logistic model, substituting the "
+                "first-stage prediction x_hat for x attenuates the coefficient due to Jensen's "
+                "inequality: E[sigma(beta*x)] != sigma(beta*E[x]). Use method='2sri' instead, "
+                "which includes the control-function residual (x - x_hat) in the second stage "
+                "and recovers the structural coefficient consistently."
+            )
         self.second_stage_model = NeuralNetworkSecondStage(x=x.shape[1], v=v_hat.shape[1], dropout=dropout)
         self.second_stage_model.train_new_data(x_exog=x,
                                                v_linear=v_hat,
                                                y=y,
                                                epochs=epochs_second_stage,
-                                               learning_rate=learning_rate_second_stage)
+                                               learning_rate=learning_rate_second_stage,
+                                               early_stopping_min_delta=early_stopping_min_delta)
         return self.second_stage_model
 
     def predict_first_stage(self, z_2: np.array) -> np.array:

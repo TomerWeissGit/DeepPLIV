@@ -80,13 +80,14 @@ class NeuralNetworkSecondStage(nn.Module):
             batch_size = 128 if y.shape[0] < 10000 else 256
         batch_size = batch_size if batch_size else 100
         early_stopping_patience = early_stopping_patience if early_stopping_patience else int(np.sqrt(epochs))
+
         x_validation = x_exog[:int(x_exog.shape[0] * 0.2)]
         v_linear_validation = v_linear[:int(v_linear.shape[0] * 0.2)]
         y_validation = y[:int(y.shape[0] * 0.2)]
         x_exog_train = x_exog[int(x_exog.shape[0] * 0.2):]
         v_linear_train = v_linear[int(v_linear.shape[0] * 0.2):]
         y_train = y[int(y.shape[0] * 0.2):]
-        # Convert numpy arrays to torch tensors
+
         x_tensor_train = torch.tensor(x_exog_train, dtype=torch.float32)
         v_tensor_train = torch.tensor(v_linear_train, dtype=torch.float32)
         y_tensor_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
@@ -95,30 +96,22 @@ class NeuralNetworkSecondStage(nn.Module):
         v_tensor_validation = torch.tensor(v_linear_validation, dtype=torch.float32)
         y_tensor_validation = torch.tensor(y_validation, dtype=torch.float32).view(-1, 1)
 
-        # Use BCE (numerically stable, expects raw logits) for binary outcomes.
         criterion = nn.BCEWithLogitsLoss() if self.binary else nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-
-        # Initialize early stopping
         early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=early_stopping_min_delta)
+
         dataset = TensorDataset(x_tensor_train, v_tensor_train, y_tensor_train)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=False)
 
-        # Training loop
-        counter = 0
-        self.train()  # Set the model to training mode
         for epoch in range(epochs):
+            self.train()
             for x_batch, v_batch, y_batch in dataloader:
-
-                # Forward pass
                 outputs = self(x_batch, v_batch)
                 loss = criterion(outputs, y_batch)
-
-                # Backward pass and optimization
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            self.eval()  # Set the model to evaluation mode
+            self.eval()
             with torch.no_grad():
                 val_output = self(x_tensor_validation, v_tensor_validation)
                 val_loss = criterion(val_output, y_tensor_validation)
@@ -143,18 +136,11 @@ class NeuralNetworkSecondStage(nn.Module):
         :param v_new_endog: np.array, the new endogenous data.
         :return: np.array, the predicted outcomes.
         """
-        # Convert numpy array to torch tensor
         x_new_tensor = torch.tensor(x_new_exog, dtype=torch.float32)
         v_new_tensor = torch.tensor(v_new_endog, dtype=torch.float32)
-        # Set the model to evaluation mode
         self.eval()
-
-        # Disable gradient computation
         with torch.no_grad():
-            # Forward pass produces raw logits; apply sigmoid for binary outcomes.
             predictions = self(x_new_tensor, v_new_tensor)
             if self.binary:
                 predictions = torch.sigmoid(predictions)
-
-        # Convert predictions to numpy array and return
         return predictions.numpy()

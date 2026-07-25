@@ -206,8 +206,18 @@ def plot_ame_bias_figure(
     savepath: str | None = None,
     binary: bool = False,
     n_filter: list | None = None,
+    drop_oracle: bool = False,
+    methods_override: list | None = None,
+    show_beta1: bool = True,
 ) -> None:
-    """2-column (one per setting) × n-row (one per n) grid of AME boxplots."""
+    """2-column (one per setting) × n-row (one per n) grid of AME boxplots.
+
+    In the continuous setting the oracle (``Linear 2SRI (oracle)``) targets the
+    structural beta_1 rather than the AME, so pass ``drop_oracle=True`` to omit
+    it. In the binary setting the oracle targets the same estimand and is kept.
+    Pass ``methods_override`` to plot an explicit subset (e.g. an oracle-focused
+    supporting figure).
+    """
     import seaborn as sns
     sns.set_style("whitegrid")
 
@@ -217,7 +227,12 @@ def plot_ame_bias_figure(
         "same-pop": "Same population",
         "partial-overlap": "Partial overlap (train t~U(0,6))",
     }
-    methods_plot = ["Naive OLS", "Linear 2SRI", "Linear 2SRI (oracle)", "DeepPLIV-2SRI"]
+    if methods_override is not None:
+        methods_plot = list(methods_override)
+    else:
+        methods_plot = ["Naive OLS", "Linear 2SRI", "Linear 2SRI (oracle)", "DeepPLIV-2SRI"]
+        if drop_oracle:
+            methods_plot = [m for m in methods_plot if m != "Linear 2SRI (oracle)"]
 
     fig, axes = plt.subplots(
         len(n_vals), len(settings),
@@ -238,10 +253,11 @@ def plot_ame_bias_figure(
                 data=sub, x="method", y="ame", order=methods_plot,
                 ax=ax, palette="Set2",
             )
-            ax.axhline(
-                BETA_1, color="grey", linestyle=":", linewidth=1.5,
-                label=rf"$\beta_1 = {BETA_1}$",
-            )
+            if show_beta1:
+                ax.axhline(
+                    BETA_1, color="grey", linestyle=":", linewidth=1.5,
+                    label=rf"$\beta_1 = {BETA_1}$",
+                )
             ax.axhline(
                 target, color="red", linestyle="--", linewidth=1.5,
                 label=rf"AME $\theta^\star = {target:+.3f}$",
@@ -260,11 +276,12 @@ def plot_ame_bias_figure(
             ax.legend(loc="best", fontsize=8, framealpha=0.9)
 
     outcome_note = " (binary outcome, log-odds scale)" if binary else ""
+    beta1_note = rf", $\beta_1 = {BETA_1}$" if show_beta1 else ""
     fig.suptitle(
         "AME estimates under same-population and partial-overlap "
         f"first-stage training{outcome_note}\n"
-        f"Target population: t ~ U(4,10), s ~ U(5,7), "
-        rf"$\beta_1 = {BETA_1}$",
+        f"Target population: t ~ U(4,10), s ~ U(5,7)"
+        f"{beta1_note}",
         fontsize=13,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.96])
@@ -336,8 +353,13 @@ def plot_rmse_figure(
     df: pd.DataFrame,
     savepath: str | None = None,
     n_filter: list | None = None,
+    drop_oracle: bool = False,
 ) -> None:
-    """1-row × 2-col RMSE boxplots at the largest n in n_filter."""
+    """1-row × 2-col RMSE boxplots at the largest n in n_filter.
+
+    Pass ``drop_oracle=True`` (continuous setting) to omit the oracle, which
+    there targets the structural beta_1 rather than the AME.
+    """
     import seaborn as sns
     sns.set_style("whitegrid")
 
@@ -349,13 +371,17 @@ def plot_rmse_figure(
         "partial-overlap": "Partial overlap",
     }
 
+    methods_plot = list(METHODS_TO_RUN)
+    if drop_oracle:
+        methods_plot = [m for m in methods_plot if m != "Linear 2SRI (oracle)"]
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
     for ax, setting in zip(axes, settings):
-        ss = df[(df.n == n_show) & (df.setting == setting) & df.method.isin(METHODS_TO_RUN)]
+        ss = df[(df.n == n_show) & (df.setting == setting) & df.method.isin(methods_plot)]
         if ss.empty:
             continue
         sns.boxplot(
-            data=ss, x="method", y="rmse", order=METHODS_TO_RUN,
+            data=ss, x="method", y="rmse", order=methods_plot,
             ax=ax, palette="Set2",
         )
         ax.set_title(setting_labels[setting], fontsize=13)

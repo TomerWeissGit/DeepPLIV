@@ -91,6 +91,9 @@ examples/*.pkl
 examples/*.png
 examples/network_structure
 
+# ARIC data (large files, kept in Dropbox + S3, not git)
+aric_data/
+
 # Root level files to ignore
 Digraph.gv
 *.png
