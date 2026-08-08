@@ -125,7 +125,7 @@ def compute_true_ame(
     s_range: Sequence[float],
     beta_1: float,
     n: int = 1_500_000,
-    K: int = 30,
+    K: int = 200,
     rng: np.random.Generator | None = None,
 ) -> float:
     """MC ground truth for the partial-linear projection (AME) on a K x K cell grid."""
