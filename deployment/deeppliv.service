@@ -1,6 +1,6 @@
 [Unit]
 Description=DeepPLIV Genetic IV Simulation - Long Running Execution
-Documentation=https://github.com/your-repo/DeepPLIV
+Documentation=https://github.com/TomerWeissGit/DeepPLIV
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -26,7 +26,7 @@ Environment=VECLIB_MAXIMUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 
 # Main execution command
-ExecStart=/home/ubuntu/venv/bin/python aws_genetic_iv_parallel.py execute
+ExecStart=/home/ubuntu/venv/bin/python deployment/aws_genetic_iv_parallel.py execute
 
 # Restart configuration for spot instance resilience
 Restart=always

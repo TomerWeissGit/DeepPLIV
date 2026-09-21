@@ -53,7 +53,7 @@ class DeepPLIV:
                         v_1: np.array,
                         epochs_first_stage: int,
                         learning_rate_first_stage: float,
-                        validation_data: tuple,
+                        validation_data: tuple = None,
                         dropout: float = 0,
                         output_dim: int = 1,
                         early_stopping_min_delta: float = 0.0) -> NeuralNetworkFirstStage:
@@ -63,12 +63,18 @@ class DeepPLIV:
         :param z_1: np.array, the instrumental variable.
         :param epochs_first_stage: int, the number of epochs for training the first stage.
         :param learning_rate_first_stage: float, the learning rate for training the first stage.
-        :param validation_data: tuple, the validation data as (x_val, y_val).
+        :param validation_data: tuple, the validation data as (z_val, v_val). If not provided, the
+            first 20% of (z_1, v_1) is held out for validation and the remaining 80% is used for
+            training, mirroring the split used internally by the second stage.
         :param dropout: float, the dropout rate for the first stage.
         :param output_dim: int, the output dimension of the first stage model.
         :param early_stopping_min_delta: float, minimum improvement to reset patience counter.
         :return: NeuralNetworkFirstStage, the trained first stage model.
         """
+        if validation_data is None:
+            split = int(z_1.shape[0] * 0.2)
+            validation_data = (z_1[:split], v_1[:split])
+            z_1, v_1 = z_1[split:], v_1[split:]
         self.first_stage_model = NeuralNetworkFirstStage(input_dim=z_1.shape[1], output_dim=output_dim,
                                                          dropout=dropout)
         self.first_stage_model.train_new_data(z_1, v_1, epochs_first_stage, learning_rate_first_stage,

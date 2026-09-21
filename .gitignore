@@ -110,3 +110,26 @@ Untitled.ipynb
 example_deepIV.ipynb
 CLAUDE.md
 PACKAGE_INFO.md
+SESSION_RESUME.md
+SIMULATION_PLAN_GAMMA_U.md
+THESIS_REPRODUCTION.tex
+.env.binary_local
+.claude/
+
+# Scratch exploration scripts (root-level, outside tests/)
+test_convergence.py
+test_cross_pop_binary.py
+test_cross_pop_binary_gu4.py
+test_cross_pop_binary_gu6.py
+test_gamma_u.py
+test_gamma_u_100k.py
+test_gamma_u_50k.py
+test_gamma_u_ensemble.py
+test_logistic_dgp.py
+test_noise_ratio.py
+test_shared_u_binary.py
+test_shared_u_both_heads.py
+test_snp_scale.py
+test_thesis_binary_table.py
+test_timing.py
+test_u_only_binary.py

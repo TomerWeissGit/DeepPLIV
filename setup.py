@@ -5,13 +5,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name='deeppliv',
-    version='0.1.1',
+    version='0.2.0',
     description='Neural network-based two-stage package for causal inference in partially-linear instrumental variable settings',
     long_description=long_description,
     long_description_content_type="text/markdown",
     author='Tomer Weiss',
     author_email='Tomerweiss248@gmail.com',
-    url='https://github.com/tomerweiss/deeppliv',
+    url='https://github.com/TomerWeissGit/DeepPLIV',
     packages=find_packages(exclude=['examples', 'examples.*', 'tests', 'tests.*']),
     install_requires=[
         'numpy>=2.0.2',

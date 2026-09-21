@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deeppliv"
-version = "0.1.1"
+version = "0.2.0"
 description = "Neural network-based two-stage package for causal inference in partially-linear instrumental variable settings"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Tomer Weiss", email = "tomer.weiss@example.com"}
+    {name = "Tomer Weiss", email = "Tomerweiss248@gmail.com"}
 ]
 keywords = ["causal inference", "instrumental variables", "deep learning", "partially linear models", "neural networks"]
 classifiers = [
@@ -54,10 +54,10 @@ aws = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tomerweiss/deeppliv"
-Documentation = "https://github.com/tomerweiss/deeppliv#readme"
-Repository = "https://github.com/tomerweiss/deeppliv"
-Issues = "https://github.com/tomerweiss/deeppliv/issues"
+Homepage = "https://github.com/TomerWeissGit/DeepPLIV"
+Documentation = "https://github.com/TomerWeissGit/DeepPLIV#readme"
+Repository = "https://github.com/TomerWeissGit/DeepPLIV"
+Issues = "https://github.com/TomerWeissGit/DeepPLIV/issues"
 
 [tool.setuptools]
 packages = ["deeppliv", "deeppliv.core", "deeppliv.models", "deeppliv.data", "deeppliv.utils"]

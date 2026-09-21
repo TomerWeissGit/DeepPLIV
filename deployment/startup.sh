@@ -73,7 +73,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/DeepPLIV
 Environment=PATH=/home/ubuntu/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/ubuntu/venv/bin/python aws_genetic_iv_parallel.py execute
+ExecStart=/home/ubuntu/venv/bin/python deployment/aws_genetic_iv_parallel.py execute
 Restart=always
 RestartSec=30
 StandardOutput=journal

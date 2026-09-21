@@ -30,8 +30,8 @@ pip install deeppliv
 ### For Development
 
 ```bash
-git clone https://github.com/tomerweiss/deeppliv.git
-cd deeppliv
+git clone https://github.com/TomerWeissGit/DeepPLIV.git
+cd DeepPLIV
 pip install -e .
 ```
 
